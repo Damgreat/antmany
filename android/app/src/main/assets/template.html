@@ -1,0 +1,852 @@
+<html lang="en">
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge">
+    <title>RuleOut Pro ®</title>
+    <style type="text/css">
+        body {
+            padding: 0;
+            margin: 0;
+            font-size: 62.5%;
+            line-height: 142%;
+            font-family: Helvetica, Calibri, Arial, sans-serif;
+            padding-bottom: 3em
+        }
+
+        sub,
+        sup {
+            font-size: 70%;
+            line-height: 100%
+        }
+
+        .applicationTable,
+        .headerWrapper {
+            max-width: 62.5em;
+            margin: 0 auto
+        }
+
+        #panelHeader td {
+            padding-top: 6.3741ex;
+            border: 0 transparent
+        }
+
+        .headerWrapper {
+            position: relative
+        }
+
+        #panelHeader td>* {
+            position: relative
+        }
+
+        .headerWrapper .expDate {
+            float: right;
+            font-weight: 700;
+            font-size: 116%;
+            text-align: right;
+            margin: .5em;
+            margin-left: 1em
+        }
+
+        .headerWrapper .panelMaker {
+            float: right;
+            width: 15%;
+            font-weight: 700;
+            font-size: 116%;
+            text-align: right;
+            margin-left: 1em
+        }
+
+        #currentDate,
+        #disclaimer,
+        .headerWrapper .expDate,
+        .panelMaker {
+            white-space: nowrap
+        }
+
+        .headerWrapper .expDate span,
+        .headerWrapper .panelMaker span {
+            font-weight: 400
+        }
+
+        .headerWrapper form.instanceInfo {
+            margin-left: 0;
+            padding: 0
+        }
+
+        .headerWrapper form.instanceInfo:after {
+            content: '';
+            display: table-cell;
+            clear: both
+        }
+
+        .headerWrapper form.instanceInfo .fieldWrapper {
+            float: left;
+            font-size: 100%;
+            white-space: nowrap
+        }
+
+        .headerWrapper form.instanceInfo .pidWrapper {
+            width: 95%;
+            margin: .5em
+        }
+
+        .headerWrapper form.instanceInfo .conclusionWrapper {
+            width: 45%;
+            text-align: left;
+            margin: .5em;
+            margin-right: 1em
+        }
+
+        .headerWrapper form.instanceInfo .techWrapper {
+            width: 20%;
+            text-align: left;
+            margin: .5em 1em
+        }
+
+        .headerWrapper form.instanceInfo .patientID {
+            width: 84%
+        }
+
+        .headerWrapper form.instanceInfo .conclusion {
+            width: 75%
+        }
+
+        .headerWrapper form.instanceInfo .tech {
+            width: 70%
+        }
+
+        .headerWrapper .bottomRow {
+            padding: .7em .5em .3em;
+            clear: both
+        }
+
+        .headerWrapper #currentDate {
+            margin: 0 1em;
+            float: left;
+            width: 35%;
+            text-align: center
+        }
+
+        .headerWrapper #disclaimer {
+            margin-right: 1em;
+            float: left;
+            text-transform: uppercase
+        }
+
+        .headerWrapper #disclaimer:after,
+        .headerWrapper #disclaimer:before {
+            content: '**'
+        }
+
+        tbody {
+            border: 1px solid #000
+        }
+
+        tbody td,
+        tbody th {
+            white-space: nowrap;
+            min-width: 1.5em;
+            border-style: solid;
+            border-width: 0 1px 1px 0;
+            border-color: transparent #000 #000 transparent;
+            vertical-align: top
+        }
+
+        td.rowspan {
+            border-bottom: 0 solid transparent
+        }
+
+        .lotBody .lotInfo {
+            position: relative;
+            width: 12.5em
+        }
+
+        td.rowspan span,
+        th.rowspan span {
+            position: absolute
+        }
+
+        th.rowspan.lotInfo span {
+            overflow: hidden;
+            position: absolute;
+            left: 0;
+            right: 0;
+            margin-left: auto;
+            margin-right: auto
+        }
+
+        td.rowspanned {
+            border-top: 0 solid transparent;
+            color: transparent;
+            background-color: transparent
+        }
+
+        #panelHeader #logoHolder {
+            position: relative
+        }
+
+        #panelHeader #versionlogo {
+            position: absolute;
+            bottom: 1px;
+            font-size: 95%
+        }
+
+        em.inlineExpDates {
+            font-weight: 400
+        }
+
+        .notesWrapper {
+            clear: both;
+            font-size: 100%;
+            margin-top: 2em
+        }
+
+        .printableNotes {
+            display: none;
+            font-style: italic;
+            white-space: pre;
+            margin: 1ex
+        }
+
+        .notesWrapper label {
+            position: absolute;
+            width: 6%;
+            left: .3125em;
+            line-height: 142%;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            -khtml-user-select: none;
+            -moz-user-select: moz-none;
+            -ms-user-select: none;
+            user-select: none
+        }
+
+        .notesWrapper textarea,
+        .printableNotes {
+            width: 91.5%;
+            padding-left: 7%;
+            min-height: 3.6ex;
+            font-family: Arial;
+            overflow-y: auto
+        }
+
+        .notesWrapper textarea {
+            resize: vertical
+        }
+
+        .applicationTable {
+            width: 100%;
+            border-spacing: 0;
+            border-collapse: collapse;
+            font-size: 120%
+        }
+
+        .applicationTable td.antibody {
+            border-right-color: #999
+        }
+
+        .applicationTable td.antibody.endProtein {
+            border-right-color: #000
+        }
+
+        .applicationTable tr.headersOf th,
+        .applicationTable tr.panelHeadings+tr.panelHeadings th {
+            border-bottom: 1px solid #000
+        }
+
+        #autoLabel,
+        #autoLabel~td,
+        .applicationTable tr.panelHeaders th {
+            border-top: 1px solid #000
+        }
+
+        #autoLabel~td.specialTypes {
+            border-top: 0 transparent
+        }
+
+        .applicationTable tr.headersOf td,
+        .applicationTable tr.headersOf th {
+            height: 5ex
+        }
+
+        .applicationTable tr.panelHeadings th {
+            border-top-color: transparent;
+            border-bottom-color: transparent;
+            min-width: 1em
+        }
+
+        .applicationTable .specialTypes {
+            max-width: 10em;
+            padding: .2ex .5em;
+            overflow: hidden;
+            text-overflow: ellipsis
+        }
+
+        .applicationTable .lotBody tr.panelHeadings th {
+            height: 3.5ex
+        }
+
+        table.applicationTable tbody tr th.phasesOnly {
+            border-left: 1px solid #000;
+            border-right: 1px solid #000
+        }
+
+        table.applicationTable tbody tr th.phasesOnly.rowspan,
+        table.applicationTable tbody tr.headersOf th.phasesOnly {
+            border-top: 1px solid #000
+        }
+
+        .applicationTable th.headerCell,
+        .applicationTable th.subHeaderCell,
+        .applicationTable tr.panelHeadings+tr.panelHeadings th.lastHeaderCell {
+            border-right-color: #999;
+            width: 1.3125em
+        }
+
+        .applicationTable th.endProtein,
+        .applicationTable th.endProtein.subHeaderCell {
+            border-right: 1px solid #000 !important
+        }
+
+        .applicationTable th.firstSubHeaderCell {
+            border-right-color: transparent
+        }
+
+        .applicationTable th.rowNumCell {
+            width: 1.5625em
+        }
+
+        .applicationTable th.labelCell {
+            width: 4.6875em
+        }
+
+        .applicationTable th.donorNumberCell {
+            width: 6.25em
+        }
+
+        .applicationTable td.antibody {
+            text-align: center
+        }
+
+        .totalsRow td {
+            padding-top: .5em;
+            padding-bottom: .5em
+        }
+
+        #autoLabel,
+        #patientCellsLabel,
+        .totalsLabel {
+            text-align: right;
+            padding-right: .5em
+        }
+
+        #patientCellsLabel {
+            border-top: 0 transparent
+        }
+
+        #autoLabel {
+            border-bottom: 0 transparent
+        }
+
+        .matchable {
+            background-color: #ccc
+        }
+
+        .totalsRow td.totalsLabel {
+            padding-top: 1ex;
+            padding-bottom: 1ex;
+            border-top: 0 transparent;
+            border-bottom: 0 transparent
+        }
+
+        .totalsRow td.totalValue {
+            color: #0a0;
+            vertical-align: middle
+        }
+
+        .totalsRow td.totalValue[data-total="0"] {
+            color: #000
+        }
+
+        .totalsRow td.totalValue[data-total="1"] {
+            color: #a00
+        }
+
+        .totalsRow td.totalValue[data-total="2"] {
+            color: #fa0
+        }
+
+        .phasesOnly {
+            display: none;
+            width: 1em;
+            position: relative
+        }
+
+        .applicationTable .specialTypes {
+            display: none
+        }
+
+        .applicationTable td.specialTypes.noBorder,
+        .applicationTable th.specialTypes.noBorder {
+            border-top: 0 transparent;
+            border-bottom: 0 transparent;
+            border-left: 0 transparent
+        }
+
+        .applicationTable #patientCellsRow+tr th.specialTypes.noBorder:last-child {
+            border-bottom: 1px solid #000
+        }
+
+        .applicationTable td.expandForSpTypes {
+            border-top: 0 transparent;
+            border-bottom: 0 transparent
+        }
+
+        .applicationTable .emptyCol {
+            width: 7.8125em
+        }
+
+        input.customInput {
+            display: none;
+            position: absolute;
+            z-index: 100
+        }
+
+        .patientCellsInfo {
+            background-color: #ffa
+        }
+
+    </style>
+</head>
+
+<body>
+    <section id="panelWrapper" style="display: block;">
+        <table
+            class="applicationTable unmatched0 unmatched1 unmatched2 unmatched3 unmatched4 unmatched5 unmatched6 unmatched7 unmatched8 unmatched9 unmatched10 unmatched11 unmatched12 unmatched13 unmatched14 unmatched15 unmatched16 unmatched17 unmatched18 unmatched19 unmatched20 unmatched21 unmatched22 unmatched23 unmatched24 unmatched25 unmatched26 unmatched27 unmatched28 unmatched29"
+            style="max-width: 910px;">`
+            <thead id="panelHeader">
+                <tr class="headerWrapper">
+                    <!-- <td id="logoHolder" colspan="3">
+
+                    </td> -->
+                    <td class="expandForPhases expandForSpTypes" colspan="33">
+                        <div>
+                            <form class="instanceInfo">
+                                <div class="fieldWrapper pidWrapper">
+                                    <label>Patient ID:
+                                        <input type="text" name="patientID" class="patientID">
+                                    </label>
+                                </div>
+                                <div class="fieldWrapper conclusionWrapper">
+                                    <label>Conclusion:
+                                        <input type="text" name="conclusion" class="conclusion">
+                                    </label>
+                                </div>
+                                <div class="fieldWrapper techWrapper">
+                                    <label>Tech:
+                                        <input type="text" name="tech" class="tech">
+                                    </label>
+                                </div>
+                                <div class="expDate">Exp. Date: <span>2024-10-22</span></div>
+                            </form>
+                            <form class="notesWrapper">
+                                <div>
+                                    <label for="notes">Notes:</label>
+                                    <textarea name="notes" id="notes" class="notes"></textarea>
+                                </div>
+                            </form>
+                            <div class="printableNotes"></div>
+                        </div>
+                        <div class="bottomRow">
+                            <div id="disclaimer">Patient sensitive information displayed</div>
+                            <div id="currentDate">Saturday, October 26, 2024 at 7:32:07 AM</div>
+                            <div class="panelMaker" data-vendor="ortho">Vendor: <span>Ortho</span></div>
+                        </div>
+                    </td>
+                </tr>
+            </thead>
+            <tbody id="appTableHead">
+                <tr class="panelHeaders">
+                    <th class="rowNumCell">#</th>
+                    <th class="labelCell">Rh-hr</th>
+                    <th class="donorNumberCell">Donor #</th>
+                    <th colspan="8">Rh-hr</th>
+                    <th colspan="6">Kell</th>
+                    <th colspan="2">Duff</th>
+                    <th colspan="2">Kidd</th>
+                    <th>X</th>
+                    <th colspan="2">Lew</th>
+                    <th colspan="4">MNS</th>
+                    <th>P</th>
+                    <th colspan="2">Luth</th>
+                    <th class="emptyCol" colspan="3">&nbsp;</th>
+                    <th class="rowNumCell">#</th>
+                    <th class="expandForPhases" colspan="1">Results</th>
+                    <th class="specialTypes">Special Type</th>
+                </tr>
+            </tbody>
+            <tbody class="lotBody" data-panelid="5440">
+                <tr class="panelHeadings">
+                    <th colspan="3" class="rowspan lotInfo"><span>0.8% Surgiscreen<br>VSS475<br><em
+                                class="inlineExpDates">2024-10-22</em></span></th>
+                    <th class="headerCell rowspan">D</th>
+                    <th class="headerCell rowspan">C</th>
+                    <th class="headerCell rowspan">E</th>
+                    <th class="headerCell rowspan">c</th>
+                    <th class="headerCell rowspan">e</th>
+                    <th class="headerCell rowspan">f</th>
+                    <th class="headerCell rowspan">C<sup>w</sup></th>
+                    <th class="headerCell endProtein rowspan">V</th>
+                    <th class="headerCell rowspan">K</th>
+                    <th class="headerCell rowspan">k</th>
+                    <th class="headerCell" colspan="2">Kp</th>
+                    <th class="headerCell endProtein" colspan="2">Js</th>
+                    <th class="headerCell endProtein" colspan="2">Fy</th>
+                    <th class="headerCell endProtein" colspan="2">Jk</th>
+                    <th class="headerCell endProtein">Xg</th>
+                    <th class="headerCell endProtein" colspan="2">Le</th>
+                    <th class="headerCell rowspan">S</th>
+                    <th class="headerCell rowspan">s</th>
+                    <th class="headerCell rowspan">M</th>
+                    <th class="headerCell endProtein rowspan">N</th>
+                    <th class="headerCell endProtein rowspan">P<sub>1</sub></th>
+                    <th class="headerCell endProtein" colspan="2">Lu</th>
+                    <th class="top contractForPhases rowspan" colspan="5">&nbsp;</th>
+                    <th class="phasesOnly rowspan" style="display: none;"><span class="phaseHeader">IS</span></th>
+                    <th class="phasesOnly rowspan" style="display: none;"><span class="phaseHeader">37</span></th>
+                    <th class="phasesOnly rowspan" style="display: none;"><span class="phaseHeader">AHG</span></th>
+                    <th class="phasesOnly rowspan" style="display: none;"><span class="phaseHeader">CC</span></th>
+                    <th class="specialTypes noBorder rowspan">&nbsp;</th>
+                </tr>
+                <tr class="panelHeadings">
+                    <td colspan="3" class="rowspanned">&nbsp;</td>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell endProtein rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell subHeaderCell firstSubHeaderCell">a</th>
+                    <th class="subHeaderCell lastHeaderCell">b</th>
+                    <th class="headerCell subHeaderCell firstSubHeaderCell">a</th>
+                    <th class="subHeaderCell lastHeaderCell endProtein">b</th>
+                    <th class="headerCell subHeaderCell firstSubHeaderCell">a</th>
+                    <th class="subHeaderCell lastHeaderCell endProtein">b</th>
+                    <th class="headerCell subHeaderCell firstSubHeaderCell">a</th>
+                    <th class="subHeaderCell lastHeaderCell endProtein">b</th>
+                    <th class="headerCell subHeaderCell firstSubHeaderCell lastHeaderCell endProtein">a</th>
+                    <th class="headerCell subHeaderCell firstSubHeaderCell">a</th>
+                    <th class="subHeaderCell lastHeaderCell endProtein">b</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell rowspanned">&nbsp;</th>
+                    <th class="headerCell endProtein rowspanned">&nbsp;</th>
+                    <th class="headerCell endProtein rowspanned">&nbsp;</th>
+                    <th class="headerCell subHeaderCell firstSubHeaderCell">a</th>
+                    <th class="subHeaderCell lastHeaderCell endProtein">b</th>
+                    <th class="top contractForPhases rowspanned" colspan="5">&nbsp;</th>
+                    <th class="phasesOnly rowspanned" style="display: none;"></th>
+                    <th class="phasesOnly rowspanned" style="display: none;"></th>
+                    <th class="phasesOnly rowspanned" style="display: none;"></th>
+                    <th class="phasesOnly rowspanned" style="display: none;"></th>
+                    <td class="specialTypes rowspanned">&nbsp;</td>
+                </tr>
+                <tr id="row5440_310065" class="donorRow" data-donor-id="310065" data-spannedovercols="2">
+                    <td>1</td>
+                    <td>R1R1</td>
+                    <td>310065</td>
+                    <td data-col="0" class="antibody matchable">+</td>
+                    <td data-col="1" class="antibody matchable">+</td>
+                    <td data-col="2" class="antibody matchable">0</td>
+                    <td data-col="3" class="antibody matchable">0</td>
+                    <td data-col="4" class="antibody matchable">+</td>
+                    <td data-col="5" class="antibody matchable">0</td>
+                    <td data-col="6" class="antibody matchable">0</td>
+                    <td data-col="7" class="antibody matchable endProtein">0</td>
+                    <td data-col="8" class="antibody matchable">+</td>
+                    <td data-col="9" class="antibody matchable">+</td>
+                    <td data-col="10" class="antibody matchable">0</td>
+                    <td data-col="11" class="antibody matchable">+</td>
+                    <td data-col="12" class="antibody matchable">n</td>
+                    <td data-col="13" class="antibody matchable endProtein">+</td>
+                    <td data-col="14" class="antibody matchable">+</td>
+                    <td data-col="15" class="antibody matchable endProtein">+</td>
+                    <td data-col="16" class="antibody matchable">+</td>
+                    <td data-col="17" class="antibody matchable endProtein">+</td>
+                    <td data-col="18" class="antibody matchable endProtein">+</td>
+                    <td data-col="19" class="antibody matchable">0</td>
+                    <td data-col="20" class="antibody matchable endProtein">+</td>
+                    <td data-col="21" class="antibody matchable">+</td>
+                    <td data-col="22" class="antibody matchable">0</td>
+                    <td data-col="23" class="antibody matchable">+</td>
+                    <td data-col="24" class="antibody matchable endProtein">0</td>
+                    <td data-col="25" class="antibody matchable endProtein">+</td>
+                    <td data-col="26" class="antibody matchable">0</td>
+                    <td data-col="27" class="antibody matchable endProtein">+</td>
+                    <td class="emptyCol customizable preResultsClickable alreadyCustomizable" colspan="3">
+                        <span></span><input class="customInput" type="text" value="">
+                    </td>
+                    <td>1</td>
+                    <td data-click-id="Or_310065_0"
+                        class="moveLR clickableCell moveAll impactsTotals phaseContextMenu phasesOnly cellIS alreadyClickable"
+                        id="cellIs_0_0" style="display: none;"><span></span></td>
+                    <td data-click-id="Or_310065_1"
+                        class="moveLR clickableCell moveAll impactsTotals phaseContextMenu phasesOnly cell37 alreadyClickable"
+                        id="cell37_0_0" style="display: none;"><span></span></td>
+                    <td data-click-id="Or_310065_2"
+                        class="moveLR clickableCell moveAll impactsTotals customizable ahg moveAll alreadyClickable alreadyCustomizable"
+                        id="d5440_310065"><span></span><input class="customInput" type="text" value=""></td>
+                    <td data-click-id="Or_310065_3"
+                        class="moveLR clickableCell moveAll impactsTotals fullContextMenu phasesOnly cellCC alreadyClickable"
+                        id="cellCc_0_0" style="display: none;"><span></span></td>
+                    <td class="specialTypes" id="spType0_0" title=""></td>
+                </tr>
+                <tr id="row5440_321347" class="donorRow" data-donor-id="321347" data-spannedovercols="2">
+                    <td>2</td>
+                    <td>R2R2</td>
+                    <td>321347</td>
+                    <td data-col="0" class="antibody matchable">+</td>
+                    <td data-col="1" class="antibody matchable">0</td>
+                    <td data-col="2" class="antibody matchable">+</td>
+                    <td data-col="3" class="antibody matchable">+</td>
+                    <td data-col="4" class="antibody matchable">0</td>
+                    <td data-col="5" class="antibody matchable">0</td>
+                    <td data-col="6" class="antibody matchable">0</td>
+                    <td data-col="7" class="antibody matchable endProtein">0</td>
+                    <td data-col="8" class="antibody matchable">0</td>
+                    <td data-col="9" class="antibody matchable">+</td>
+                    <td data-col="10" class="antibody matchable">0</td>
+                    <td data-col="11" class="antibody matchable">+</td>
+                    <td data-col="12" class="antibody matchable">n</td>
+                    <td data-col="13" class="antibody matchable endProtein">+</td>
+                    <td data-col="14" class="antibody matchable">+</td>
+                    <td data-col="15" class="antibody matchable endProtein">0</td>
+                    <td data-col="16" class="antibody matchable">+</td>
+                    <td data-col="17" class="antibody matchable endProtein">0</td>
+                    <td data-col="18" class="antibody matchable endProtein">0</td>
+                    <td data-col="19" class="antibody matchable">0</td>
+                    <td data-col="20" class="antibody matchable endProtein">0</td>
+                    <td data-col="21" class="antibody matchable">+</td>
+                    <td data-col="22" class="antibody matchable">+</td>
+                    <td data-col="23" class="antibody matchable">+</td>
+                    <td data-col="24" class="antibody matchable endProtein">0</td>
+                    <td data-col="25" class="antibody matchable endProtein">+</td>
+                    <td data-col="26" class="antibody matchable">0</td>
+                    <td data-col="27" class="antibody matchable endProtein">+</td>
+                    <td class="emptyCol customizable preResultsClickable alreadyCustomizable" colspan="3">
+                        <span></span><input class="customInput" type="text" value="">
+                    </td>
+                    <td>2</td>
+                    <td data-click-id="Or_321347_0"
+                        class="moveLR clickableCell moveAll impactsTotals phaseContextMenu phasesOnly cellIS alreadyClickable"
+                        id="cellIs_0_1" style="display: none;"><span></span></td>
+                    <td data-click-id="Or_321347_1"
+                        class="moveLR clickableCell moveAll impactsTotals phaseContextMenu phasesOnly cell37 alreadyClickable"
+                        id="cell37_0_1" style="display: none;"><span></span></td>
+                    <td data-click-id="Or_321347_2"
+                        class="moveLR clickableCell moveAll impactsTotals customizable ahg moveAll alreadyClickable alreadyCustomizable"
+                        id="d5440_321347"><span></span><input class="customInput" type="text" value=""></td>
+                    <td data-click-id="Or_321347_3"
+                        class="moveLR clickableCell moveAll impactsTotals fullContextMenu phasesOnly cellCC alreadyClickable"
+                        id="cellCc_0_1" style="display: none;"><span></span></td>
+                    <td class="specialTypes" id="spType0_1" title=""></td>
+                </tr>
+                <tr id="row5440_310595" class="donorRow" data-donor-id="310595" data-spannedovercols="2">
+                    <td>3</td>
+                    <td>rr</td>
+                    <td>310595</td>
+                    <td data-col="0" class="antibody matchable">0</td>
+                    <td data-col="1" class="antibody matchable">0</td>
+                    <td data-col="2" class="antibody matchable">0</td>
+                    <td data-col="3" class="antibody matchable">+</td>
+                    <td data-col="4" class="antibody matchable">+</td>
+                    <td data-col="5" class="antibody matchable">+</td>
+                    <td data-col="6" class="antibody matchable">0</td>
+                    <td data-col="7" class="antibody matchable endProtein">0</td>
+                    <td data-col="8" class="antibody matchable">0</td>
+                    <td data-col="9" class="antibody matchable">+</td>
+                    <td data-col="10" class="antibody matchable">0</td>
+                    <td data-col="11" class="antibody matchable">+</td>
+                    <td data-col="12" class="antibody matchable">n</td>
+                    <td data-col="13" class="antibody matchable endProtein">+</td>
+                    <td data-col="14" class="antibody matchable">0</td>
+                    <td data-col="15" class="antibody matchable endProtein">+</td>
+                    <td data-col="16" class="antibody matchable">0</td>
+                    <td data-col="17" class="antibody matchable endProtein">+</td>
+                    <td data-col="18" class="antibody matchable endProtein">+</td>
+                    <td data-col="19" class="antibody matchable">+</td>
+                    <td data-col="20" class="antibody matchable endProtein">0</td>
+                    <td data-col="21" class="antibody matchable">0</td>
+                    <td data-col="22" class="antibody matchable">+</td>
+                    <td data-col="23" class="antibody matchable">+</td>
+                    <td data-col="24" class="antibody matchable endProtein">+</td>
+                    <td data-col="25" class="antibody matchable endProtein">0</td>
+                    <td data-col="26" class="antibody matchable">0</td>
+                    <td data-col="27" class="antibody matchable endProtein">+</td>
+                    <td class="emptyCol customizable preResultsClickable alreadyCustomizable" colspan="3">
+                        <span></span><input class="customInput" type="text" value="">
+                    </td>
+                    <td>3</td>
+                    <td data-click-id="Or_310595_0"
+                        class="moveLR clickableCell moveAll impactsTotals phaseContextMenu phasesOnly cellIS alreadyClickable"
+                        id="cellIs_0_2" style="display: none;"><span></span></td>
+                    <td data-click-id="Or_310595_1"
+                        class="moveLR clickableCell moveAll impactsTotals phaseContextMenu phasesOnly cell37 alreadyClickable"
+                        id="cell37_0_2" style="display: none;"><span></span></td>
+                    <td data-click-id="Or_310595_2"
+                        class="moveLR clickableCell moveAll impactsTotals customizable ahg moveAll alreadyClickable alreadyCustomizable"
+                        id="d5440_310595"><span></span><input class="customInput" type="text" value=""></td>
+                    <td data-click-id="Or_310595_3"
+                        class="moveLR clickableCell moveAll impactsTotals fullContextMenu phasesOnly cellCC alreadyClickable"
+                        id="cellCc_0_2" style="display: none;"><span></span></td>
+                    <td class="specialTypes" id="spType0_2" title=""></td>
+                </tr>
+            </tbody>
+            <tbody id="firstTotals">
+                <tr class="totalsRow">
+                    <td colspan="3" class="totalsLabel">Homozygous Totals:</td>
+                    <td class="antibody totalValue" data-col="0" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="1" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="2" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="3" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="4" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="5" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="6" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="7" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="8" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="9" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="10" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="11" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="12" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="13" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="14" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="15" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="16" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="17" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="18" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="19" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="20" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="21" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="22" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="23" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="24" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="25" data-total="0">0</td>
+                    <td class="antibody totalValue" data-col="26" data-total="0">0</td>
+                    <td class="antibody totalValue endProtein" data-col="27" data-total="0">0</td>
+                    <td colspan="5" class="expandForPhases expandForSpTypes">&nbsp;</td>
+                </tr>
+                <tr id="patientCellsRow" data-spannedovercols="5">
+                    <td colspan="3" class="rowspan" id="patientCellsLabel">Patient Cells:</td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells0" data-col="0" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells1" data-col="1" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells2" data-col="2" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells3" data-col="3" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells4" data-col="4" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells5" data-col="5" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells6" data-col="6" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells7" data-col="7" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells8" data-col="8" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells9" data-col="9" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells10" data-col="10" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells11" data-col="11" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells12" data-col="12" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells13" data-col="13" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells14" data-col="14" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells15" data-col="15" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells16" data-col="16" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells17" data-col="17" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells18" data-col="18" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells19" data-col="19" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells20" data-col="20" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells21" data-col="21" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells22" data-col="22" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells23" data-col="23" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells24" data-col="24" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells25" data-col="25" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable"
+                        id="patientCells26" data-col="26" data-total="0"><span></span></td>
+                    <td class="moveLR antibody clickableCell shortContextMenu patientCellsInfo alreadyClickable endProtein"
+                        id="patientCells27" data-col="27" data-total="0"><span></span></td>
+                    <td colspan="4" id="autoLabel">Auto</td>
+                    <td class="moveLR autoctrl clickableCell moveAll phasesOnly phaseContextMenu alreadyClickable"
+                        data-click-id="auto_is" id="cellIs_a" style="display: none;"><span></span></td>
+                    <td class="moveLR autoctrl clickableCell moveAll phasesOnly phaseContextMenu alreadyClickable"
+                        data-click-id="auto_37" id="cell37_a" style="display: none;"><span></span></td>
+                    <td class="moveLR autoctrl clickableCell moveAll customizable alreadyClickable alreadyCustomizable"
+                        data-click-id="auto_ahg" id="d_0_auto"><span></span><input class="customInput" type="text"
+                            value=""></td>
+                    <td class="moveLR autoctrl clickableCell moveAll phasesOnly fullContextMenu alreadyClickable"
+                        data-click-id="auto_cc" id="cellCc_a" style="display: none;"><span></span></td>
+                    <td class="specialTypes noBorder"></td>
+                </tr>
+                <tr class="headersOf">
+                    <td colspan="3" class="rowspanned">&nbsp;</td>
+                    <th class="headerCell">D</th>
+                    <th class="headerCell">C</th>
+                    <th class="headerCell">E</th>
+                    <th class="headerCell">c</th>
+                    <th class="headerCell">e</th>
+                    <th class="headerCell">f</th>
+                    <th class="headerCell">C<sup>w</sup></th>
+                    <th class="headerCell endProtein">V</th>
+                    <th class="headerCell">K</th>
+                    <th class="headerCell">k</th>
+                    <th class="headerCell" colspan="2">Kp</th>
+                    <th class="headerCell endProtein" colspan="2">Js</th>
+                    <th class="headerCell endProtein" colspan="2">Fy</th>
+                    <th class="headerCell endProtein" colspan="2">Jk</th>
+                    <th class="headerCell endProtein">Xg</th>
+                    <th class="headerCell endProtein" colspan="2">Le</th>
+                    <th class="headerCell">S</th>
+                    <th class="headerCell">s</th>
+                    <th class="headerCell">M</th>
+                    <th class="headerCell endProtein">N</th>
+                    <th class="headerCell endProtein">P<sub>1</sub></th>
+                    <th class="headerCell endProtein" colspan="2">Lu</th>
+                    <th class="top contractForPhases" colspan="5">&nbsp;</th>
+                    <th class="phasesOnly" style="display: none;"><span class="phaseHeader">IS</span></th>
+                    <th class="phasesOnly" style="display: none;"><span class="phaseHeader">37</span></th>
+                    <th class="phasesOnly" style="display: none;"><span class="phaseHeader">AHG</span></th>
+                    <th class="phasesOnly" style="display: none;"><span class="phaseHeader">CC</span></th>
+                    <th class="specialTypes noBorder">&nbsp;</th>
+                </tr>
+            </tbody>
+
+
+        </table>
+    </section>
+</body>
+
+</html>

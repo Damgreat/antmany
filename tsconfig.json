@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "es5",
+    "lib": ["es2019", "dom"],
+    "module": "commonjs",
+    "strict": true,
+    "baseUrl": ".", // this must be specified if "paths" is specified.
+    "paths": {
+      "@env": ["node_modules/react-native-dotenv"], // this mapping is relative to "baseUrl"
+      "crypto": [ "node_modules/react-native-quick-crypto"]
+    },
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react-native",
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "typeRoots": ["./node_modules/@types", "./src/types"]
+  },
+  "include": ["src/**/*", "**/*.ts", "**/*.tsx", "types/**/*.d.ts", "src/types/**/*.d.ts", "src/types/*.d.ts"],
+  "exclude": [
+    "node_modules",
+    "babel.config.js",
+    "metro.config.js",
+    "jest.config.js"
+  ]
+}
