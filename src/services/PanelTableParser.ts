@@ -11,7 +11,7 @@ import {
   ParsedColumnLayout,
   ResultValue,
 } from '../types';
-import {summarizeExtractionAccuracy} from '../utils/ocrExtractionValidation';
+import {summarizeExtractionAccuracy, buildAnalysisExtractionSlots} from '../utils/ocrExtractionValidation';
 import {computeOverallOcrConfidence, capOverallScoreByExtraction} from '../utils/ocrTableConfidence';
 import * as AntigenData from './AntigenData';
 
@@ -215,7 +215,11 @@ function isBlankLikeNoise(raw: string): boolean {
   }
 
   const compact = trimmed.replace(/\s+/g, '');
-  return /^[.,:;'"`’‘~_|¦]+$/.test(compact);
+  if (compact === '/' || compact === '|') {
+    return false;
+  }
+
+  return /^[.,:;'"`’‘~_¦]+$/.test(compact);
 }
 
 function retryNormaliseResultValue(raw: string): {
@@ -238,7 +242,8 @@ function retryNormaliseResultValue(raw: string): {
     .toUpperCase()
     .replace(/\s+/g, '')
     .replace(/[()[\]{}]/g, '')
-    .replace(/[’‘]/g, "'");
+    .replace(/[’‘]/g, "'")
+    .replace(/^\*+/, '');
 
   if (!compact) {
     return {
@@ -263,7 +268,7 @@ function retryNormaliseResultValue(raw: string): {
     return {value: 'NT', exact: true, recovered: true, blankLike: false};
   }
 
-  if (/^[OQD]$/.test(compact) || compact === '00' || compact === 'OO') {
+  if (compact === '0' || /^[OQD]$/.test(compact) || compact === '00' || compact === 'OO') {
     return {value: '0', exact: true, recovered: true, blankLike: false};
   }
 
@@ -1082,6 +1087,10 @@ function stabilizeDescriptorsFromGroupSpans(
     group: string;
     groupAliases: string[];
   }>,
+  grid: Array<Array<{text: string; confidence: number}>>,
+  dataStartRow: number,
+  specialColumns: SpecialColumns,
+  antigenLookup: Map<string, string>,
 ): ColumnDescriptor[] {
   const descriptorsByColumn = new Map<number, ColumnDescriptor>();
   for (const descriptor of columnDescriptors) {
@@ -1091,13 +1100,25 @@ function stabilizeDescriptorsFromGroupSpans(
   for (const span of groupSpans) {
     const expectedAntigens = antigenGroups[span.group] ?? [];
     const spanWidth = span.endCol - span.startCol + 1;
-    if (expectedAntigens.length === 0 || expectedAntigens.length !== spanWidth) {
+    if (expectedAntigens.length === 0 || spanWidth < expectedAntigens.length) {
       continue;
     }
 
-    for (let offset = 0; offset < spanWidth; offset++) {
-      const sourceColumn = span.startCol + offset;
-      const antigen = expectedAntigens[offset];
+    const offset = computeGroupSpanAntigenOffset(
+      span,
+      expectedAntigens,
+      descriptorsByColumn,
+      table,
+      headerRows,
+      antigenLookup,
+      grid,
+      dataStartRow,
+      specialColumns,
+    );
+
+    for (let index = 0; index < expectedAntigens.length; index++) {
+      const sourceColumn = span.startCol + offset + index;
+      const antigen = expectedAntigens[index];
       const headerPath = buildHeaderPathForColumn(table, headerRows, sourceColumn);
       const existing = descriptorsByColumn.get(sourceColumn);
 
@@ -1193,6 +1214,313 @@ function buildSchemaProjectionCandidates(
   );
 }
 
+function countResultLikeCellsInRange(
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  startCol: number,
+  endCol: number,
+  maxRows = 14,
+): number {
+  let count = 0;
+  const endRow = Math.min(grid.length - 1, dataStartRow + maxRows - 1);
+  for (let row = dataStartRow; row <= endRow; row++) {
+    for (let col = startCol; col <= endCol; col++) {
+      const text = grid[row]?.[col]?.text ?? '';
+      const resolved = resolveCellResultValue(text);
+      if (resolved.value !== '' && resolved.value !== '?') {
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
+function computeMetadataSkipOffset(span: GroupSpan, specialColumns: SpecialColumns): number {
+  let lastMetadataCol = span.startCol - 1;
+  for (const col of [specialColumns.phenotypeCol, specialColumns.donorNumberCol]) {
+    if (col >= span.startCol && col <= span.endCol && col > lastMetadataCol) {
+      lastMetadataCol = col;
+    }
+  }
+  return lastMetadataCol >= span.startCol ? lastMetadataCol - span.startCol + 1 : 0;
+}
+
+function computeGroupSpanAntigenOffset(
+  span: GroupSpan,
+  expectedAntigens: string[],
+  descriptorsByColumn: Map<number, ColumnDescriptor>,
+  table: RawTable,
+  headerRows: number[],
+  antigenLookup: Map<string, string>,
+  grid?: Array<Array<{text: string; confidence: number}>>,
+  dataStartRow?: number,
+  specialColumns?: SpecialColumns,
+): number {
+  const spanWidth = span.endCol - span.startCol + 1;
+  if (expectedAntigens.length === 0 || spanWidth < expectedAntigens.length) {
+    return 0;
+  }
+  if (spanWidth === expectedAntigens.length) {
+    return specialColumns ? computeMetadataSkipOffset(span, specialColumns) : 0;
+  }
+
+  const minOffset = specialColumns ? computeMetadataSkipOffset(span, specialColumns) : 0;
+  let bestOffset = minOffset;
+  let bestScore = -1;
+  for (let offset = minOffset; offset <= spanWidth - expectedAntigens.length; offset++) {
+    let score = 0;
+    for (let index = 0; index < expectedAntigens.length; index++) {
+      const sourceColumn = span.startCol + offset + index;
+      const existing = descriptorsByColumn.get(sourceColumn);
+      if (existing?.antigen === expectedAntigens[index]) {
+        score += 25;
+      }
+      const headerPath = buildHeaderPathForColumn(table, headerRows, sourceColumn);
+      for (const label of headerPath) {
+        if (resolveAntigenValue(label, antigenLookup) === expectedAntigens[index]) {
+          score += 20;
+        }
+      }
+      if (grid && dataStartRow !== undefined) {
+        score +=
+          countResultLikeCellsInRange(grid, dataStartRow, sourceColumn, sourceColumn, 10) * 4;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestOffset = offset;
+    }
+  }
+  return bestOffset;
+}
+
+function columnHasDataSignal(
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  col: number,
+  maxRows = 12,
+): boolean {
+  const endRow = Math.min(grid.length - 1, dataStartRow + maxRows - 1);
+  for (let row = dataStartRow; row <= endRow; row++) {
+    if ((grid[row]?.[col]?.text ?? '').trim()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function refineSourceColumnByDataDensity(
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  sourceColumn: number,
+  span: GroupSpan,
+  neighborRadius = 1,
+): number {
+  if (columnHasDataSignal(grid, dataStartRow, sourceColumn)) {
+    return sourceColumn;
+  }
+
+  const baseCount = countResultLikeCellsInRange(
+    grid,
+    dataStartRow,
+    sourceColumn,
+    sourceColumn,
+    12,
+  );
+  let bestColumn = sourceColumn;
+  let bestCount = baseCount;
+
+  for (let delta = -neighborRadius; delta <= neighborRadius; delta++) {
+    if (delta === 0) {
+      continue;
+    }
+    const col = sourceColumn + delta;
+    if (col < span.startCol || col > span.endCol) {
+      continue;
+    }
+    const count = countResultLikeCellsInRange(grid, dataStartRow, col, col, 12);
+    if (count > bestCount) {
+      bestCount = count;
+      bestColumn = col;
+    }
+  }
+  return bestColumn;
+}
+
+function buildDescriptorsFromSchemaAndSpans(
+  columnDescriptors: ColumnDescriptor[],
+  groupSpans: GroupSpan[],
+  schemaColumns: Array<{
+    key: string;
+    label: string;
+    kind: 'analysis' | 'supplemental';
+    required: boolean;
+    aliases?: string[];
+    group: string;
+    groupAliases: string[];
+  }>,
+  table: RawTable,
+  headerRows: number[],
+  antigenGroups: AntigenGroups,
+  schemaColumnMap: Map<string, {
+    key: string;
+    label: string;
+    kind: 'analysis' | 'supplemental';
+    required: boolean;
+    aliases?: string[];
+    group: string;
+    groupAliases: string[];
+  }>,
+  antigenToGroupMap: Map<string, string>,
+  antigenLookup: Map<string, string>,
+  grid: Array<Array<{text: string; confidence: number}>>,
+  dataStartRow: number,
+  specialColumns: SpecialColumns,
+): ColumnDescriptor[] {
+  const byAntigen = new Map(columnDescriptors.map(descriptor => [descriptor.antigen, descriptor]));
+  const descriptorsByColumn = new Map(
+    columnDescriptors.map(descriptor => [descriptor.sourceColumn, descriptor]),
+  );
+  const spanByGroup = new Map<string, GroupSpan>();
+  for (const span of groupSpans) {
+    const current = spanByGroup.get(span.group);
+    const spanWidth = span.endCol - span.startCol;
+    const currentWidth = current ? current.endCol - current.startCol : -1;
+    if (!current || spanWidth > currentWidth) {
+      spanByGroup.set(span.group, span);
+    }
+  }
+
+  const spanOffsets = new Map<string, number>();
+  for (const [groupName, span] of spanByGroup.entries()) {
+    const expectedAntigens = antigenGroups[groupName] ?? [];
+    spanOffsets.set(
+      groupName,
+      computeGroupSpanAntigenOffset(
+        span,
+        expectedAntigens,
+        descriptorsByColumn,
+        table,
+        headerRows,
+        antigenLookup,
+        grid,
+        dataStartRow,
+        specialColumns,
+      ),
+    );
+  }
+
+  const result: ColumnDescriptor[] = [];
+  for (const schemaColumn of schemaColumns) {
+    const existing = byAntigen.get(schemaColumn.key);
+    const groupAntigens = antigenGroups[schemaColumn.group] ?? [];
+    const antigenIndex = groupAntigens.indexOf(schemaColumn.key);
+    const span = spanByGroup.get(schemaColumn.group);
+
+    if (antigenIndex < 0 || !span) {
+      if (existing) {
+        result.push({
+          ...existing,
+          kind: schemaColumn.kind,
+          required: schemaColumn.required,
+          expectedGroup: schemaColumn.group,
+        });
+      }
+      continue;
+    }
+
+    const offset = spanOffsets.get(schemaColumn.group) ?? 0;
+    let sourceColumn = span.startCol + offset + antigenIndex;
+    sourceColumn = refineSourceColumnByDataDensity(grid, dataStartRow, sourceColumn, span);
+    const headerPath = buildHeaderPathForColumn(table, headerRows, sourceColumn);
+    const spanDescriptor = toColumnDescriptor(
+      sourceColumn,
+      schemaColumn.key,
+      schemaColumn.group,
+      headerPath,
+      existing?.sourceColumn === sourceColumn ? existing.evidence : 'group_span',
+      schemaColumnMap,
+      antigenToGroupMap,
+    );
+
+    if (!existing) {
+      result.push({
+        ...spanDescriptor,
+        kind: schemaColumn.kind,
+        required: schemaColumn.required,
+        expectedGroup: schemaColumn.group,
+      });
+      continue;
+    }
+
+    if (existing.sourceColumn === sourceColumn) {
+      result.push({
+        ...existing,
+        kind: schemaColumn.kind,
+        required: schemaColumn.required,
+        expectedGroup: schemaColumn.group,
+      });
+      continue;
+    }
+
+    const existingDensity = countResultLikeCellsInRange(
+      grid,
+      dataStartRow,
+      existing.sourceColumn,
+      existing.sourceColumn,
+      10,
+    );
+    const spanDensity = countResultLikeCellsInRange(
+      grid,
+      dataStartRow,
+      sourceColumn,
+      sourceColumn,
+      10,
+    );
+    result.push(
+      spanDensity >= existingDensity
+        ? {
+            ...spanDescriptor,
+            kind: schemaColumn.kind,
+            required: schemaColumn.required,
+            expectedGroup: schemaColumn.group,
+          }
+        : {
+            ...existing,
+            kind: schemaColumn.kind,
+            required: schemaColumn.required,
+            expectedGroup: schemaColumn.group,
+          },
+    );
+  }
+
+  return result.sort((left, right) => left.sourceColumn - right.sourceColumn);
+}
+
+function mergeDetectedIntoProjection(
+  detected: ColumnDescriptor[],
+  projected: ColumnDescriptor[],
+): ColumnDescriptor[] {
+  const detectedByAntigen = new Map(detected.map(descriptor => [descriptor.antigen, descriptor]));
+
+  return projected.map(projectedDescriptor => {
+    const match = detectedByAntigen.get(projectedDescriptor.antigen);
+    if (
+      match &&
+      EVIDENCE_SCORES[match.evidence] >= EVIDENCE_SCORES.compact
+    ) {
+      return {
+        ...projectedDescriptor,
+        sourceColumn: match.sourceColumn,
+        headerPath: match.headerPath.length > 0 ? match.headerPath : projectedDescriptor.headerPath,
+        detectedGroup: match.detectedGroup || projectedDescriptor.detectedGroup,
+        evidence: match.evidence,
+      };
+    }
+    return projectedDescriptor;
+  });
+}
+
 function scoreSchemaProjectionCandidate(
   candidate: ProjectionCandidate,
   table: RawTable,
@@ -1209,6 +1537,8 @@ function scoreSchemaProjectionCandidate(
   columnDescriptors: ColumnDescriptor[],
   groupSpans: GroupSpan[],
   groupLookup: Map<string, string>,
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
 ): number {
   const descriptorByColumn = new Map(
     columnDescriptors.map(descriptor => [descriptor.sourceColumn, descriptor]),
@@ -1251,7 +1581,14 @@ function scoreSchemaProjectionCandidate(
     directMatches * 4 +
     groupMatches * 2 +
     headerCoverage * 0.5 -
-    conflictingColumns * 3
+    conflictingColumns * 3 +
+    countResultLikeCellsInRange(
+      grid,
+      dataStartRow,
+      candidate.startCol,
+      candidate.endCol,
+    ) *
+      0.35
   );
 }
 
@@ -1281,6 +1618,8 @@ function projectSchemaDescriptors(
     groupAliases: string[];
   }>,
   specialColumns: SpecialColumns,
+  grid: Array<Array<{text: string; confidence: number}>>,
+  dataStartRow: number,
 ): ColumnDescriptor[] | null {
   const candidates = buildSchemaProjectionCandidates(
     table,
@@ -1304,6 +1643,8 @@ function projectSchemaDescriptors(
         columnDescriptors,
         groupSpans,
         groupLookup,
+        grid,
+        dataStartRow,
       ),
     }))
     .sort((left, right) => right.score - left.score);
@@ -1321,21 +1662,26 @@ function projectSchemaDescriptors(
   const existingByColumn = new Map(
     columnDescriptors.map(descriptor => [descriptor.sourceColumn, descriptor]),
   );
+  const existingByAntigen = new Map(
+    columnDescriptors.map(descriptor => [descriptor.antigen, descriptor]),
+  );
 
   return schemaColumns.map((schemaColumn, index) => {
-    const sourceColumn = bestCandidate.candidate.startCol + index;
+    const antigenMatch = existingByAntigen.get(schemaColumn.key);
+    const projectedSourceColumn = bestCandidate.candidate.startCol + index;
+    const sourceColumn = antigenMatch?.sourceColumn ?? projectedSourceColumn;
     const headerPath = buildHeaderPathForColumn(table, headerRows, sourceColumn);
     const existing = existingByColumn.get(sourceColumn);
     const groupSpan = getGroupSpanForColumn(groupSpans, sourceColumn);
     const detectedGroup =
       groupSpan?.group ||
+      antigenMatch?.detectedGroup ||
       existing?.detectedGroup ||
       resolveDetectedGroup(headerPath, groupLookup) ||
       schemaColumn.group;
     const evidence =
-      existing?.antigen === schemaColumn.key
-        ? existing.evidence
-        : 'schema_projection';
+      antigenMatch?.evidence ??
+      (existing?.antigen === schemaColumn.key ? existing.evidence : 'schema_projection');
 
     return toColumnDescriptor(
       sourceColumn,
@@ -1364,7 +1710,17 @@ function scoreTableCandidate(
     }
   }
 
-  return table.numCols * 10 + headerMatches * 25 + table.numRows;
+  let dataHits = 0;
+  for (let row = headerRow + 1; row <= Math.min(table.numRows, headerRow + 16); row++) {
+    for (let col = 1; col <= table.numCols; col++) {
+      const text = grid[row]?.[col]?.text.trim() ?? '';
+      if (text && resolveCellResultValue(text).value !== '' && resolveCellResultValue(text).value !== '?') {
+        dataHits++;
+      }
+    }
+  }
+
+  return table.numCols * 10 + headerMatches * 25 + table.numRows + dataHits * 4;
 }
 
 function uniqueValues(values: string[]): string[] {
@@ -1531,10 +1887,29 @@ export class PanelTableParser {
       this.antigenGroups,
       this.antigenToGroupMap,
       this.schemaColumnMap,
+      grid,
+      dataStartRow,
+      specialColumns,
+      this.antigenLookup,
+    );
+    const spanAlignedDescriptors = buildDescriptorsFromSchemaAndSpans(
+      stabilizedDescriptors,
+      groupSpans,
+      this.schemaColumns,
+      mainTable,
+      headerRows,
+      this.antigenGroups,
+      this.schemaColumnMap,
+      this.antigenToGroupMap,
+      this.antigenLookup,
+      grid,
+      dataStartRow,
+      specialColumns,
     );
     columnDescriptors.length = 0;
-    columnDescriptors.push(...stabilizedDescriptors);
+    columnDescriptors.push(...spanAlignedDescriptors);
 
+    const detectedBeforeProjection = [...columnDescriptors];
     const projectedDescriptors = projectSchemaDescriptors(
       mainTable,
       headerRows,
@@ -1545,17 +1920,30 @@ export class PanelTableParser {
       this.antigenToGroupMap,
       this.schemaColumnMap,
       specialColumns,
+      grid,
+      dataStartRow,
     );
     if (projectedDescriptors && projectedDescriptors.length > 0) {
-      const projectedGroupMismatches = projectedDescriptors.filter(
-        descriptor =>
-          descriptor.detectedGroup &&
-          descriptor.expectedGroup &&
-          descriptor.detectedGroup !== descriptor.expectedGroup,
-      ).length;
-      if (projectedGroupMismatches === 0) {
-        columnDescriptors.length = 0;
-        columnDescriptors.push(...projectedDescriptors);
+      const mappedAntigens = new Set(columnDescriptors.map(descriptor => descriptor.antigen));
+      const missingAnalysis = this.schemaColumns.filter(
+        column => column.kind === 'analysis' && !mappedAntigens.has(column.key),
+      );
+      if (missingAnalysis.length > 3) {
+        const projectedGroupMismatches = projectedDescriptors.filter(
+          descriptor =>
+            descriptor.detectedGroup &&
+            descriptor.expectedGroup &&
+            descriptor.detectedGroup !== descriptor.expectedGroup,
+        ).length;
+        if (projectedGroupMismatches === 0) {
+          columnDescriptors.length = 0;
+          columnDescriptors.push(
+            ...mergeDetectedIntoProjection(
+              detectedBeforeProjection,
+              projectedDescriptors,
+            ),
+          );
+        }
       }
     }
 
@@ -1829,21 +2217,20 @@ export class PanelTableParser {
     const analysisDescriptors = columnDescriptors.filter(descriptor => descriptor.kind === 'analysis');
     const extractionN = cells.length;
     const extractionX = analysisDescriptors.length;
-    const extractionSlots = [];
-    for (let rowIdx = 0; rowIdx < cells.length; rowIdx++) {
-      const cell = cells[rowIdx];
-      const rowConf = cellConfidences[rowIdx] ?? [];
-      const confByKey = new Map(rowConf.map(c => [c.columnKey, c.confidence]));
-
-      for (const descriptor of analysisDescriptors) {
-        extractionSlots.push({
-          value: cell.results[descriptor.antigen],
-          confidence: confByKey.get(descriptor.antigen),
-          rowIndex: rowIdx + 1,
-          columnKey: descriptor.antigen,
-        });
-      }
-    }
+    const expectedAnalysisKeys = this.schemaColumns
+      .filter(column => column.kind === 'analysis')
+      .map(column => column.key);
+    const extractionSlots = buildAnalysisExtractionSlots(
+      cells,
+      columnDescriptors.map(descriptor => ({
+        key: descriptor.antigen,
+        kind: descriptor.kind,
+      })),
+      {
+        cellConfidences,
+        expectedKeys: expectedAnalysisKeys,
+      },
+    );
 
     const extractionSummary = summarizeExtractionAccuracy(extractionSlots, {
       lowConfidenceThreshold: LOW_CONFIDENCE_WARN_THRESHOLD,

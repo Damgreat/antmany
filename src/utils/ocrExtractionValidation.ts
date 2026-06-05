@@ -77,6 +77,111 @@ export function computeExtractionAccuracyPercent(
 
 const MAX_INVALID_SAMPLES_IN_LOG = 25;
 
+/** Spec: only columns with kind === 'analysis' count toward n×X (not supplemental/side/result). */
+export function filterAnalysisExtractionColumns<
+  T extends {key: string; kind?: string},
+>(columns: T[]): T[] {
+  return columns.filter(column => column.kind === 'analysis');
+}
+
+export function mergeAnalysisColumnKeys(
+  columns: Array<{key: string; kind?: string}>,
+  expectedKeys?: string[],
+): string[] {
+  return [
+    ...new Set([
+      ...filterAnalysisExtractionColumns(columns).map(column => column.key),
+      ...(expectedKeys ?? []),
+    ]),
+  ];
+}
+
+export type BuildExtractionSlotsOptions = {
+  cellConfidences?: Array<Array<{columnKey: string; confidence: number}>>;
+  expectedKeys?: string[];
+};
+
+export function buildAnalysisExtractionSlots(
+  cells: Array<{results: Record<string, unknown>}>,
+  columns: Array<{key: string; kind?: string}>,
+  options?: BuildExtractionSlotsOptions,
+): ExtractionSlotSpec[] {
+  const keys = mergeAnalysisColumnKeys(columns, options?.expectedKeys);
+  return cells.flatMap((cell, rowIdx) => {
+    const rowConf = options?.cellConfidences?.[rowIdx] ?? [];
+    const confByKey = new Map(rowConf.map(c => [c.columnKey, c.confidence]));
+    return keys.map(key => ({
+      value: cell.results[key],
+      confidence: confByKey.get(key),
+      rowIndex: rowIdx + 1,
+      columnKey: key,
+    }));
+  });
+}
+
+export function computeLiveExtractionAccuracy(
+  cells: Array<{results: Record<string, unknown>}>,
+  columns: Array<{key: string; kind?: string}>,
+  options?: BuildExtractionSlotsOptions &
+    Parameters<typeof summarizeExtractionAccuracy>[1],
+): ExtractionAccuracySummary {
+  const {cellConfidences, expectedKeys, ...summaryOptions} = options ?? {};
+  return summarizeExtractionAccuracy(
+    buildAnalysisExtractionSlots(cells, columns, {cellConfidences, expectedKeys}),
+    summaryOptions,
+  );
+}
+
+export function countUnresolvedAnalysisSlots(
+  cells: Array<{results: Record<string, unknown>}>,
+  columns: Array<{key: string; kind?: string}>,
+  expectedKeys?: string[],
+  includeResult = true,
+  cellConfidences?: BuildExtractionSlotsOptions['cellConfidences'],
+): number {
+  const keys = mergeAnalysisColumnKeys(columns, expectedKeys);
+  let count = 0;
+  cells.forEach((cell, rowIdx) => {
+    const rowConf = cellConfidences?.[rowIdx] ?? [];
+    const confByKey = new Map(rowConf.map(c => [c.columnKey, c.confidence]));
+    for (const key of keys) {
+      if (
+        isInvalidExtractionSlot(cell.results[key], confByKey.get(key))
+      ) {
+        count++;
+      }
+    }
+    if (
+      includeResult &&
+      isInvalidExtractionSlot(cell.results.result, confByKey.get('result'))
+    ) {
+      count++;
+    }
+  });
+  return count;
+}
+
+export function computeAnalysisCellValueScore(
+  cells: Array<{results: Record<string, unknown>}>,
+  columns: Array<{key: string; kind?: string}>,
+  expectedKeys?: string[],
+  cellConfidences?: BuildExtractionSlotsOptions['cellConfidences'],
+): number {
+  const keys = mergeAnalysisColumnKeys(columns, expectedKeys);
+  const totalSlots = cells.length * keys.length;
+  if (totalSlots <= 0) {
+    return 0;
+  }
+  const unresolved = countUnresolvedAnalysisSlots(
+    cells,
+    columns,
+    expectedKeys,
+    false,
+    cellConfidences,
+  );
+  return Math.round(((totalSlots - unresolved) / totalSlots) * 100);
+}
+
 export function summarizeExtractionAccuracy(
   slots: ExtractionSlotSpec[],
   options?: {

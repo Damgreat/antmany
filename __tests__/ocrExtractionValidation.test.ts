@@ -1,5 +1,6 @@
 import {
   computeExtractionAccuracyPercent,
+  computeLiveExtractionAccuracy,
   getExtractionInvalidReason,
   isInvalidExtractionSlot,
   logExtractionAccuracyBreakdown,
@@ -82,6 +83,17 @@ describe('OCR extraction accuracy calculation', () => {
       expect(summary.slotCount).toBe(10);
       expect(summary.invalidCount).toBe(3);
       expect(summary.accuracyPercent).toBe(70);
+    });
+
+    it('expected schema keys expand slot grid when columns missing from layout', () => {
+      const cells = [{results: {D: '+', C: ''}}];
+      const columns = [{key: 'D', kind: 'analysis' as const}];
+      const summary = computeLiveExtractionAccuracy(cells, columns, {
+        expectedKeys: ['D', 'C', 'E'],
+      });
+      expect(summary.slotCount).toBe(3);
+      expect(summary.invalidCount).toBe(2);
+      expect(summary.accuracyPercent).toBe(33);
     });
   });
 

@@ -1,3 +1,8 @@
+jest.mock('../src/services/DatabaseService', () => ({
+  __esModule: true,
+  default: {},
+}));
+
 import {PanelTableParser} from '../src/services/PanelTableParser';
 
 type Block = Record<string, any>;
@@ -492,5 +497,113 @@ describe('PanelTableParser', () => {
     expect(result.panelData.cells[0].results.C).toBe('0');
     expect(result.lowConfidenceCells.some(cell => cell.columnKey === 'D' && cell.value === '?')).toBe(false);
     expect(result.metrics.cellValueScore).toBeGreaterThan(0);
+  });
+
+  it('reads slash and starred values as valid panel results', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('d-header', 1, 2, 'D');
+    appendCell('jsa-header', 1, 3, 'Jsa');
+    appendCell('k-header', 1, 4, 'K');
+    appendCell('row1-cell', 2, 1, '1');
+    appendCell('row1-d', 2, 2, '+');
+    appendCell('row1-jsa', 2, 3, '/');
+    appendCell('row1-k', 2, 4, '*0');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-slash-star',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells[0].results.D).toBe('+');
+    expect(result.panelData.cells[0].results.Jsa).toBe('/');
+    expect(result.panelData.cells[0].results.K).toBe('0');
+  });
+
+  it('maps Rh-hr antigens after phenotype and donor metadata columns inside the group span', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 10, 'MERGED_CELL');
+    appendCell('kell-group', 1, 12, 'KELL', 1, 2, 'MERGED_CELL');
+    appendCell('result-group', 1, 14, 'TEST RESULTS');
+
+    appendCell('rh-sub', 2, 2, 'Rh-hr');
+    appendCell('donor-sub', 2, 3, 'Donor');
+    appendCell('rh-antigens', 2, 4, 'D C E c e f V Cw', 1, 8, 'MERGED_CELL');
+    appendCell('k-col', 2, 12, 'K');
+    appendCell('little-k', 2, 13, 'k');
+    appendCell('is-col', 2, 14, 'IS');
+
+    const rhValues = ['+', '0', '+', '0', '+', '0', '+', '0'];
+    appendCell('row1-cell', 3, 1, '1');
+    appendCell('row1-phenotype', 3, 2, 'R1R1');
+    appendCell('row1-donor', 3, 3, '6110302318014');
+    rhValues.forEach((value, index) => {
+      appendCell(`row1-rh-${index}`, 3, 4 + index, value);
+    });
+    appendCell('row1-k', 3, 12, '+');
+    appendCell('row1-little-k', 3, 13, '0');
+    appendCell('row1-is', 3, 14, '+');
+
+    appendCell('row2-cell', 4, 1, '2');
+    appendCell('row2-phenotype', 4, 2, 'rr');
+    appendCell('row2-donor', 4, 3, '1787373');
+    ['0', '+', '0', '+', '0', '+', '0', '+'].forEach((value, index) => {
+      appendCell(`row2-rh-${index}`, 4, 4 + index, value);
+    });
+    appendCell('row2-k', 4, 12, '0');
+    appendCell('row2-little-k', 4, 13, '+');
+    appendCell('row2-is', 4, 14, '0');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-alba-metadata',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells[0].results.D).toBe('+');
+    expect(result.panelData.cells[0].results.C).toBe('0');
+    expect(result.panelData.cells[0].results.E).toBe('+');
+    expect(result.panelData.cells[0].results.c).toBe('0');
+    expect(result.panelData.cells[0].results.f).toBe('0');
+    expect(result.panelData.cells[0].results.V).toBe('+');
+    expect(result.panelData.cells[1].results.D).toBe('0');
+    expect(result.panelData.cells[1].results.C).toBe('+');
+    expect(result.panelData.cells[0].results.K).toBe('+');
   });
 });

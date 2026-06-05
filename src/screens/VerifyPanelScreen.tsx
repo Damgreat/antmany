@@ -17,7 +17,13 @@ import { RootStackParamList } from '../navigation';
 import { COLORS, FONTS } from '../constants/fonts';
 import CustomText from '../components/CustomText';
 import { CellData, OcrStructureMetrics, PanelData, ResultValue } from '../types';
-import {summarizeExtractionAccuracy, normalizeExtractionCellValue} from '../utils/ocrExtractionValidation';
+import {
+  computeAnalysisCellValueScore,
+  computeLiveExtractionAccuracy,
+  countUnresolvedAnalysisSlots,
+  mergeAnalysisColumnKeys,
+} from '../utils/ocrExtractionValidation';
+import * as AntigenData from '../services/AntigenData';
 import {
   capOverallScoreByExtraction,
   computeOverallOcrConfidence,
@@ -107,34 +113,24 @@ function buildStructuredRows(cells: CellData[]) {
   }));
 }
 
-function isFilledResultValue(value: unknown): boolean {
-  const normalized = normalizeExtractionCellValue(value);
-  return normalized !== '' && normalized !== '?';
+function getExpectedAnalysisKeys(manufacturer: string): string[] {
+  const groups = AntigenData.getOcrAnalysisGroups(manufacturer);
+  return [...new Set(Object.values(groups).flat())];
 }
 
 function computeUnknownCount(
   panelData: PanelData,
-  renderColumns: Array<{key: string; required?: boolean}>,
+  renderColumns: Array<{key: string; kind?: string}>,
+  expectedAnalysisKeys?: string[],
+  cellConfidences?: CellConfidence[][],
 ): number {
-  const requiredKeys = new Set(
-    renderColumns
-      .filter(column => column.required !== false)
-      .map(column => column.key),
+  return countUnresolvedAnalysisSlots(
+    panelData.cells,
+    renderColumns,
+    expectedAnalysisKeys,
+    true,
+    cellConfidences,
   );
-
-  let count = 0;
-  for (const cell of panelData.cells) {
-    for (const [columnKey, value] of Object.entries(cell.results)) {
-      if (
-        !isFilledResultValue(value) &&
-        (columnKey === 'result' || requiredKeys.has(columnKey))
-      ) {
-        count++;
-      }
-    }
-  }
-
-  return count;
 }
 
 function recomputeVerificationMetrics(
@@ -142,58 +138,40 @@ function recomputeVerificationMetrics(
   renderColumns: Array<{key: string; kind?: string; required?: boolean}>,
   fallbackMetrics: OcrStructureMetrics,
   cellConfidences?: CellConfidence[][],
+  expectedAnalysisKeys?: string[],
 ): OcrStructureMetrics {
-  const requiredKeys = renderColumns
-    .filter(column => column.required !== false)
-    .map(column => column.key);
-
-  const totalValueSlots = panelData.cells.length * (requiredKeys.length + 1);
-  let resolvedValueSlots = 0;
-  let unresolvedRequired = 0;
-
-  for (const cell of panelData.cells) {
-    for (const columnKey of requiredKeys) {
-      const value = cell.results[columnKey] ?? '';
-      if (isFilledResultValue(value)) {
-        resolvedValueSlots++;
-      } else {
-        unresolvedRequired++;
-      }
-    }
-
-    const resultValue = cell.results.result ?? '';
-    if (isFilledResultValue(resultValue)) {
-      resolvedValueSlots++;
-    } else {
-      unresolvedRequired++;
-    }
-  }
-
-  const cellValueScore =
-    totalValueSlots > 0
-      ? Math.round((resolvedValueSlots / totalValueSlots) * 100)
-      : 0;
+  const analysisKeys = mergeAnalysisColumnKeys(renderColumns, expectedAnalysisKeys);
+  const extractionN = panelData.cells.length;
+  const extractionX = analysisKeys.length;
+  const extractionSummary = computeLiveExtractionAccuracy(
+    panelData.cells,
+    renderColumns,
+    {
+      cellConfidences,
+      expectedKeys: expectedAnalysisKeys,
+      logLabel: `VerifyPanel recompute (${extractionN}×${extractionX})`,
+    },
+  );
+  const extractionAccuracy = extractionSummary.accuracyPercent;
+  const cellValueScore = computeAnalysisCellValueScore(
+    panelData.cells,
+    renderColumns,
+    expectedAnalysisKeys,
+    cellConfidences,
+  );
+  const totalValueSlots =
+    panelData.cells.length * (analysisKeys.length + 1);
+  const unresolvedRequired = countUnresolvedAnalysisSlots(
+    panelData.cells,
+    renderColumns,
+    expectedAnalysisKeys,
+    true,
+    cellConfidences,
+  );
   const unreadablePenalty =
     totalValueSlots > 0
       ? Math.min(6, Math.round((unresolvedRequired / totalValueSlots) * 100))
       : 0;
-
-  const analysisColumns = renderColumns.filter(
-    column => column.kind !== 'supplemental' && column.required !== false,
-  );
-  const extractionN = panelData.cells.length;
-  const extractionX = analysisColumns.length;
-  const extractionSlots = panelData.cells.flatMap((cell, rowIdx) =>
-    analysisColumns.map(col => ({
-      value: cell.results[col.key],
-      rowIndex: rowIdx + 1,
-      columnKey: col.key,
-    })),
-  );
-  const extractionSummary = summarizeExtractionAccuracy(extractionSlots, {
-    logLabel: `VerifyPanel recompute (${extractionN}×${extractionX})`,
-  });
-  const extractionAccuracy = extractionSummary.accuracyPercent;
 
   const refreshed = refreshOcrConfidenceMetrics(
     {...fallbackMetrics, extractionAccuracy, cellValueScore},
@@ -335,25 +313,6 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     antigen: string;
   } | null>(null);
 
-  const metrics: OcrStructureMetrics = useMemo(
-    () =>
-      refreshOcrConfidenceMetrics(
-        panelData.metadata.ocrMetrics ?? routeMetrics,
-        panelData,
-        routeCellConfidences,
-      ),
-    [panelData, routeMetrics, routeCellConfidences],
-  );
-
-  const validationMessages = useMemo(() => {
-    const metadataMessages =
-      panelData.metadata.validationIssues?.map(issue => issue.message) ?? [];
-    if (metadataMessages.length > 0) {
-      return Array.from(new Set(metadataMessages));
-    }
-    return parseErrors;
-  }, [panelData.metadata.validationIssues, parseErrors]);
-
   const renderColumns = useMemo(
     () =>
       panelData.metadata.columnLayout?.filter(
@@ -371,18 +330,42 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     [panelData.antigens, panelData.metadata.columnLayout],
   );
 
+  const expectedAnalysisKeys = useMemo(
+    () => getExpectedAnalysisKeys(manufacturer),
+    [manufacturer],
+  );
+
+  const metrics: OcrStructureMetrics = useMemo(
+    () =>
+      recomputeVerificationMetrics(
+        panelData,
+        renderColumns,
+        panelData.metadata.ocrMetrics ?? routeMetrics,
+        routeCellConfidences,
+        expectedAnalysisKeys,
+      ),
+    [
+      panelData,
+      renderColumns,
+      routeMetrics,
+      routeCellConfidences,
+      expectedAnalysisKeys,
+    ],
+  );
+
+  const validationMessages = useMemo(() => {
+    const metadataMessages =
+      panelData.metadata.validationIssues?.map(issue => issue.message) ?? [];
+    if (metadataMessages.length > 0) {
+      return Array.from(new Set(metadataMessages));
+    }
+    return parseErrors;
+  }, [panelData.metadata.validationIssues, parseErrors]);
+
   useEffect(() => {
-    const analysisColumns = renderColumns.filter(
-      column => column.kind !== 'supplemental' && column.required !== false,
-    );
-    const slots = panelData.cells.flatMap((cell, rowIdx) =>
-      analysisColumns.map(col => ({
-        value: cell.results[col.key],
-        rowIndex: rowIdx + 1,
-        columnKey: col.key,
-      })),
-    );
-    const summary = summarizeExtractionAccuracy(slots, {
+    const summary = computeLiveExtractionAccuracy(panelData.cells, renderColumns, {
+      expectedKeys: expectedAnalysisKeys,
+      cellConfidences: routeCellConfidences,
       logLabel: 'VerifyPanel display check',
       log: true,
     });
@@ -394,7 +377,13 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
         recomputedSummary: summary,
       });
     }
-  }, [panelData.cells, renderColumns, metrics.extractionAccuracy]);
+  }, [
+    panelData.cells,
+    renderColumns,
+    metrics.extractionAccuracy,
+    expectedAnalysisKeys,
+    routeCellConfidences,
+  ]);
 
   const groupedColumns = useMemo(() => {
     const groups: Array<{group: string; columns: typeof renderColumns}> = [];
@@ -422,8 +411,14 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
   }, [lowConfidenceCells, verifiedCellKeys]);
 
   const unknownCount = useMemo(
-    () => computeUnknownCount(panelData, renderColumns),
-    [panelData, renderColumns],
+    () =>
+      computeUnknownCount(
+        panelData,
+        renderColumns,
+        expectedAnalysisKeys,
+        routeCellConfidences,
+      ),
+    [panelData, renderColumns, expectedAnalysisKeys, routeCellConfidences],
   );
   const blockingValidationMessages = useMemo(
     () => buildBlockingValidationMessages(panelData, renderColumns),
@@ -493,6 +488,7 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
           renderColumns,
           nextPanelData.metadata.ocrMetrics ?? routeMetrics,
           routeCellConfidences,
+          expectedAnalysisKeys,
         );
 
         return {
@@ -504,7 +500,7 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
         };
       });
     },
-    [pickerTarget, renderColumns, routeMetrics, routeCellConfidences],
+    [pickerTarget, renderColumns, routeMetrics, routeCellConfidences, expectedAnalysisKeys],
   );
 
   const handleProceed = useCallback(() => {

@@ -53,8 +53,8 @@ const DISABLED_COLOR = '#cccccc';
 const DEFAULT_S3_REGION = 'us-west-2';
 const MAX_FETCH_RETRY = 3;
 const FETCH_RETRY_DELAY_MS = 1500;
-const MAX_UPLOAD_DIMENSION = 2400;
-const UPLOAD_JPEG_QUALITY = 85;
+const MAX_UPLOAD_DIMENSION = 3200;
+const UPLOAD_JPEG_QUALITY = 92;
 let s3ClientCache: S3Client | null = null;
 
 const getErrorMessage = (error: unknown): string => {
