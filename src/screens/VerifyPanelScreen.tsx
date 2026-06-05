@@ -17,7 +17,13 @@ import { RootStackParamList } from '../navigation';
 import { COLORS, FONTS } from '../constants/fonts';
 import CustomText from '../components/CustomText';
 import { CellData, OcrStructureMetrics, PanelData, ResultValue } from '../types';
-import {summarizeExtractionAccuracy} from '../utils/ocrExtractionValidation';
+import {summarizeExtractionAccuracy, normalizeExtractionCellValue} from '../utils/ocrExtractionValidation';
+import {
+  capOverallScoreByExtraction,
+  computeOverallOcrConfidence,
+  refreshOcrConfidenceMetrics,
+} from '../utils/ocrTableConfidence';
+import {CellConfidence} from '../services/PanelTableParser';
 
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'VerifyPanel'>;
@@ -101,6 +107,11 @@ function buildStructuredRows(cells: CellData[]) {
   }));
 }
 
+function isFilledResultValue(value: unknown): boolean {
+  const normalized = normalizeExtractionCellValue(value);
+  return normalized !== '' && normalized !== '?';
+}
+
 function computeUnknownCount(
   panelData: PanelData,
   renderColumns: Array<{key: string; required?: boolean}>,
@@ -114,7 +125,10 @@ function computeUnknownCount(
   let count = 0;
   for (const cell of panelData.cells) {
     for (const [columnKey, value] of Object.entries(cell.results)) {
-      if (value === '?' && (columnKey === 'result' || requiredKeys.has(columnKey))) {
+      if (
+        !isFilledResultValue(value) &&
+        (columnKey === 'result' || requiredKeys.has(columnKey))
+      ) {
         count++;
       }
     }
@@ -127,6 +141,7 @@ function recomputeVerificationMetrics(
   panelData: PanelData,
   renderColumns: Array<{key: string; kind?: string; required?: boolean}>,
   fallbackMetrics: OcrStructureMetrics,
+  cellConfidences?: CellConfidence[][],
 ): OcrStructureMetrics {
   const requiredKeys = renderColumns
     .filter(column => column.required !== false)
@@ -139,18 +154,18 @@ function recomputeVerificationMetrics(
   for (const cell of panelData.cells) {
     for (const columnKey of requiredKeys) {
       const value = cell.results[columnKey] ?? '';
-      if (value === '?') {
-        unresolvedRequired++;
-      } else {
+      if (isFilledResultValue(value)) {
         resolvedValueSlots++;
+      } else {
+        unresolvedRequired++;
       }
     }
 
     const resultValue = cell.results.result ?? '';
-    if (resultValue === '?') {
-      unresolvedRequired++;
-    } else {
+    if (isFilledResultValue(resultValue)) {
       resolvedValueSlots++;
+    } else {
+      unresolvedRequired++;
     }
   }
 
@@ -162,17 +177,6 @@ function recomputeVerificationMetrics(
     totalValueSlots > 0
       ? Math.min(6, Math.round((unresolvedRequired / totalValueSlots) * 100))
       : 0;
-  const overallScore = Math.max(
-    0,
-    Math.round(
-      fallbackMetrics.textScore * 0.2 +
-        cellValueScore * 0.15 +
-        fallbackMetrics.mappingScore * 0.25 +
-        fallbackMetrics.structureScore * 0.25 +
-        fallbackMetrics.completenessScore * 0.15 -
-        unreadablePenalty,
-    ),
-  );
 
   const analysisColumns = renderColumns.filter(
     column => column.kind !== 'supplemental' && column.required !== false,
@@ -191,8 +195,25 @@ function recomputeVerificationMetrics(
   });
   const extractionAccuracy = extractionSummary.accuracyPercent;
 
+  const refreshed = refreshOcrConfidenceMetrics(
+    {...fallbackMetrics, extractionAccuracy, cellValueScore},
+    panelData,
+    cellConfidences,
+  );
+  const overallScore = capOverallScoreByExtraction(
+    computeOverallOcrConfidence({
+      textScore: refreshed.textScore,
+      cellValueScore,
+      mappingScore: refreshed.mappingScore,
+      structureScore: refreshed.structureScore,
+      completenessScore: refreshed.completenessScore,
+      unreadablePenalty,
+    }),
+    extractionAccuracy,
+  );
+
   return {
-    ...fallbackMetrics,
+    ...refreshed,
     cellValueScore,
     overallScore,
     extractionAccuracy,
@@ -302,6 +323,7 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     parseErrors,
     metrics: routeMetrics,
     manufacturer,
+    cellConfidences: routeCellConfidences,
   } = route.params;
 
   const [panelData, setPanelData] = useState<PanelData>(initialPanelData);
@@ -313,8 +335,15 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     antigen: string;
   } | null>(null);
 
-  const metrics: OcrStructureMetrics =
-    panelData.metadata.ocrMetrics ?? routeMetrics;
+  const metrics: OcrStructureMetrics = useMemo(
+    () =>
+      refreshOcrConfidenceMetrics(
+        panelData.metadata.ocrMetrics ?? routeMetrics,
+        panelData,
+        routeCellConfidences,
+      ),
+    [panelData, routeMetrics, routeCellConfidences],
+  );
 
   const validationMessages = useMemo(() => {
     const metadataMessages =
@@ -400,8 +429,13 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     () => buildBlockingValidationMessages(panelData, renderColumns),
     [panelData, renderColumns],
   );
+  const extractionAccuracy = metrics.extractionAccuracy ?? 0;
+  const extractionPassed = extractionAccuracy >= 95;
   // Spec §4/§6: extraction is acceptable ONLY when accuracy ≥ 95 AND all cells are resolved.
-  const canProceed = unknownCount === 0 && blockingValidationMessages.length === 0;
+  const canProceed =
+    unknownCount === 0 &&
+    blockingValidationMessages.length === 0 &&
+    extractionPassed;
 
   const openPicker = useCallback((cellIndex: number, antigen: string) => {
     setPickerTarget({cellIndex, antigen});
@@ -458,6 +492,7 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
           nextPanelData,
           renderColumns,
           nextPanelData.metadata.ocrMetrics ?? routeMetrics,
+          routeCellConfidences,
         );
 
         return {
@@ -469,7 +504,7 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
         };
       });
     },
-    [pickerTarget, renderColumns, routeMetrics],
+    [pickerTarget, renderColumns, routeMetrics, routeCellConfidences],
   );
 
   const handleProceed = useCallback(() => {
@@ -630,9 +665,6 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
       </TouchableOpacity>
     </View>
   );
-
-  const extractionAccuracy = metrics.extractionAccuracy ?? 0;
-  const extractionPassed = extractionAccuracy >= 95;
 
   const renderConfidenceBadge = () => {
     const color = confidenceColor(metrics.overallScore);

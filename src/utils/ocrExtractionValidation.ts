@@ -112,11 +112,14 @@ export function summarizeExtractionAccuracy(
   }
 
   const slotCount = slots.length;
+  const validCount = slotCount - invalidCount;
+  const accuracyPercent = computeExtractionAccuracyPercent(slotCount, invalidCount);
+
   const summary: ExtractionAccuracySummary = {
     slotCount,
     invalidCount,
-    validCount: slotCount - invalidCount,
-    accuracyPercent: computeExtractionAccuracyPercent(slotCount, invalidCount),
+    validCount,
+    accuracyPercent,
     invalidSamples,
   };
 

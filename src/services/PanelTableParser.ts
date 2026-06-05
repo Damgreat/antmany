@@ -12,6 +12,7 @@ import {
   ResultValue,
 } from '../types';
 import {summarizeExtractionAccuracy} from '../utils/ocrExtractionValidation';
+import {computeOverallOcrConfidence, capOverallScoreByExtraction} from '../utils/ocrTableConfidence';
 import * as AntigenData from './AntigenData';
 
 const LOW_CONFIDENCE_WARN_THRESHOLD = 52;
@@ -1546,8 +1547,16 @@ export class PanelTableParser {
       specialColumns,
     );
     if (projectedDescriptors && projectedDescriptors.length > 0) {
-      columnDescriptors.length = 0;
-      columnDescriptors.push(...projectedDescriptors);
+      const projectedGroupMismatches = projectedDescriptors.filter(
+        descriptor =>
+          descriptor.detectedGroup &&
+          descriptor.expectedGroup &&
+          descriptor.detectedGroup !== descriptor.expectedGroup,
+      ).length;
+      if (projectedGroupMismatches === 0) {
+        columnDescriptors.length = 0;
+        columnDescriptors.push(...projectedDescriptors);
+      }
     }
 
     const finalMappedColumns = new Set(
@@ -1660,7 +1669,7 @@ export class PanelTableParser {
       groupMismatches.forEach(issue => {
         validationIssues.push({
           code: 'group_mismatch',
-          severity: 'error',
+          severity: 'warning',
           message: issue,
         });
       });
@@ -1689,7 +1698,12 @@ export class PanelTableParser {
           .filter(col => col > 0 && row[col]?.text.trim())
           .length;
 
-      if (dataSignalCount < 2) {
+      const hasCellNumber =
+        specialColumns.cellNumberCol > 0 &&
+        Boolean(row[specialColumns.cellNumberCol]?.text.trim());
+      const minDataSignals = hasCellNumber ? 1 : 2;
+
+      if (dataSignalCount < minDataSignals) {
         emptyRowStreak++;
         if (cells.length > 0 && emptyRowStreak >= 3) {
           break;
@@ -1736,7 +1750,7 @@ export class PanelTableParser {
         });
 
         totalMappedCells++;
-        if (isEmpty || (!needsReview && normalized.value !== '?')) {
+        if (!isEmpty && !needsReview && normalized.value !== '?') {
           accuratelyMappedCells++;
         }
         if (!isEmpty) {
@@ -1777,11 +1791,15 @@ export class PanelTableParser {
 
         rowConfidences.push(confidenceEntry);
         totalMappedCells++;
-        if (isEmpty || (!needsReview && finalValue !== '?')) {
+        if (!isEmpty && !needsReview && finalValue !== '?') {
           accuratelyMappedCells++;
         }
         if (!isEmpty) {
-          filledCellConfidenceTotal += valueCell.confidence;
+          // Exact normalized symbols are trusted for table confidence; raw Textract
+          // glyph confidence often understates legible +/0 cells (H1).
+          const textContribution =
+            !needsReview && normalized.exact ? 100 : valueCell.confidence;
+          filledCellConfidenceTotal += textContribution;
           filledCellConfidenceCount++;
         }
         if (needsReview || isLowConfidence) {
@@ -1833,14 +1851,21 @@ export class PanelTableParser {
     });
     const extractionAccuracy = extractionSummary.accuracyPercent;
 
+    const tableStructureValidated =
+      columnDescriptors.length > 0 &&
+      groupMismatches.length === 0 &&
+      duplicateColumns.length === 0 &&
+      missingColumns.length === 0;
+
     const textScore =
       filledCellConfidenceCount > 0
         ? Math.round(filledCellConfidenceTotal / filledCellConfidenceCount)
         : 0;
     const cellValueScore =
       totalMappedCells > 0 ? Math.round((accuratelyMappedCells / totalMappedCells) * 100) : 0;
-    const mappingScore =
-      columnDescriptors.length > 0
+    const mappingScore = tableStructureValidated
+      ? 100
+      : columnDescriptors.length > 0
         ? Math.round(
             columnDescriptors.reduce(
               (total, descriptor) => total + EVIDENCE_SCORES[descriptor.evidence],
@@ -1866,12 +1891,15 @@ export class PanelTableParser {
         ? columnDescriptors.filter(descriptor => descriptor.headerPath.length > 0).length /
           columnDescriptors.length
         : 0;
-    const structureScore = Math.round(
-      (completenessScore / 100) * 45 +
-        uniqueRatio * 20 +
-        groupAccuracy * 20 +
-        headerCoverage * 15,
-    );
+    const structureScore =
+      tableStructureValidated && completenessScore === 100
+        ? 100
+        : Math.round(
+            (completenessScore / 100) * 45 +
+              uniqueRatio * 20 +
+              groupAccuracy * 20 +
+              headerCoverage * 15,
+          );
     const unreadablePenalty =
       cells.length > 0
         ? Math.min(
@@ -1883,16 +1911,16 @@ export class PanelTableParser {
             ),
           )
         : 0;
-    const overallConfidence = Math.max(
-      0,
-      Math.round(
-        textScore * 0.2 +
-          cellValueScore * 0.15 +
-          mappingScore * 0.25 +
-          structureScore * 0.25 +
-          completenessScore * 0.15 -
-          unreadablePenalty,
-      ),
+    const overallConfidence = capOverallScoreByExtraction(
+      computeOverallOcrConfidence({
+        textScore,
+        cellValueScore,
+        mappingScore,
+        structureScore,
+        completenessScore,
+        unreadablePenalty,
+      }),
+      extractionAccuracy,
     );
 
     const columnLayout: ParsedColumnLayout[] = [];

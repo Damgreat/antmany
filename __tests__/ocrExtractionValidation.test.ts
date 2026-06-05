@@ -45,27 +45,43 @@ describe('OCR extraction accuracy calculation', () => {
       expect(summary.validCount).toBe(100);
     });
 
-    it('case 2: 5 empty cells out of 100 → accuracy 95%', () => {
+    it('case 2: 5 empty slots out of 100 → 95%', () => {
       const summary = summarizeExtractionAccuracy(
         buildSlots(100, [0, 1, 2, 3, 4]),
       );
+      expect(summary.slotCount).toBe(100);
       expect(summary.invalidCount).toBe(5);
       expect(summary.accuracyPercent).toBe(95);
     });
 
-    it('case 3: 20 empty cells out of 100 → accuracy 80%', () => {
+    it('case 3: 20 empty slots out of 100 → 80%', () => {
       const summary = summarizeExtractionAccuracy(
         buildSlots(100, Array.from({length: 20}, (_, i) => i)),
       );
+      expect(summary.slotCount).toBe(100);
       expect(summary.invalidCount).toBe(20);
       expect(summary.accuracyPercent).toBe(80);
     });
 
-    it('displayed accuracy matches formula (n×X − invalid) / (n×X) × 100', () => {
-      const summary = summarizeExtractionAccuracy(buildSlots(100, [7, 42, 99]));
-      const expected = Math.round(((100 - 3) / 100) * 100);
-      expect(summary.accuracyPercent).toBe(expected);
-      expect(summary.accuracyPercent).toBe(97);
+    it('sparse panel: few + marks among many blanks → low accuracy', () => {
+      const slots: ExtractionSlotSpec[] = Array.from({length: 50}, (_, index) => ({
+        value: index < 4 ? '+' : '',
+        rowIndex: Math.floor(index / 5) + 1,
+        columnKey: ['D', 'C', 'E', 'c', 'e'][index % 5],
+      }));
+      const summary = summarizeExtractionAccuracy(slots);
+      expect(summary.slotCount).toBe(50);
+      expect(summary.invalidCount).toBe(46);
+      expect(summary.accuracyPercent).toBe(8);
+    });
+
+    it('full-grid accuracy penalizes empty and unreadable values', () => {
+      const summary = summarizeExtractionAccuracy(
+        buildSlots(10, [0, 1, 2], () => '?'),
+      );
+      expect(summary.slotCount).toBe(10);
+      expect(summary.invalidCount).toBe(3);
+      expect(summary.accuracyPercent).toBe(70);
     });
   });
 
@@ -112,18 +128,19 @@ describe('OCR extraction accuracy calculation', () => {
   describe('logExtractionAccuracyBreakdown', () => {
     it('logs formula and displayed percentage for inspection', () => {
       const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-      const summary = summarizeExtractionAccuracy(buildSlots(100, [0, 1, 2, 3, 4]));
 
-      logExtractionAccuracyBreakdown('jest-test', summary, {forceLog: true});
+      const occupiedSummary = summarizeExtractionAccuracy(
+        buildSlots(100, [7, 42, 99], () => '?'),
+      );
+      logExtractionAccuracyBreakdown('jest-test', occupiedSummary, {forceLog: true});
 
       expect(logSpy).toHaveBeenCalledWith(
         '[OCR Accuracy] jest-test',
         expect.objectContaining({
-          formula: '(100 - 5) / 100 * 100 = 95%',
-          accuracyPercent: 95,
-          displayedAccuracy: '95%',
+          accuracyPercent: 97,
+          displayedAccuracy: '97%',
           passAt95Threshold: true,
-          invalidCount: 5,
+          invalidCount: 3,
         }),
       );
 
