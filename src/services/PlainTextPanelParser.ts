@@ -102,6 +102,7 @@ export class PlainTextPanelParser {
       logLabel: `PlainTextPanelParser (${cells.length}×${antigens.length})`,
     });
     const extractionAccuracy = extractionSummary.accuracyPercent;
+    const extractionAccuracyColumns = antigens;
 
     const metrics: OcrStructureMetrics = {
       textScore: overallConfidence,
@@ -128,6 +129,7 @@ export class PlainTextPanelParser {
         expirationDate: '',
         panelType: 'Panel A',
         testName: '',
+        extractionAccuracyColumns,
         ocrMetrics: metrics,
       },
       antigenGroups: getAntigenGroups(this.manufacturer),

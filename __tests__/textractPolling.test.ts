@@ -16,12 +16,12 @@ describe('textractPolling', () => {
     expect(isTextractResponseNotReady(500, 'Internal error')).toBe(false);
   });
 
-  it('polls primary key only for first attempts', () => {
+  it('polls all candidate keys each attempt', () => {
     const keys = [
       'resps/pix-1.json',
       'resps/pix-1.jpg.json',
     ];
-    expect(getTextractKeysForAttempt(keys, 1)).toEqual([keys[0]]);
+    expect(getTextractKeysForAttempt(keys, 1)).toEqual(keys);
     expect(getTextractKeysForAttempt(keys, 4)).toEqual(keys);
   });
 });

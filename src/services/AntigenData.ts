@@ -325,6 +325,7 @@ import {AntigenGroups} from '../types';
         label: column,
         kind: 'analysis' as const,
         required: true,
+        ...(column === 'V' ? {aliases: ['*V']} : {}),
       })),
     },
     {

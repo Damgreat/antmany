@@ -127,6 +127,8 @@ export interface PanelMetadata {
     shadedColumns?: string[];
     footerNotes?: string[];
     columnLayout?: ParsedColumnLayout[];
+    /** Analysis column keys used for n×X extraction accuracy (detected columns only). */
+    extractionAccuracyColumns?: string[];
     columnGroups?: OcrColumnGroup[];
     unreadableCells?: OcrUnreadableCell[];
     validationIssues?: OcrValidationIssue[];

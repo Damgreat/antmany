@@ -1,11 +1,11 @@
 /** Delay after a failed Textract poll round (exponential backoff, capped). */
 export function getTextractPollDelayMs(attempt: number): number {
   const baseMs = 1000;
-  return Math.min(5000, Math.round(baseMs * Math.pow(1.35, Math.max(0, attempt - 1))));
+  return Math.min(5000, Math.round(baseMs * Math.pow(1.3, Math.max(0, attempt - 1))));
 }
 
-export const TEXTRACT_INITIAL_WAIT_MS = 2000;
-export const TEXTRACT_POLL_MAX_ATTEMPTS = 30;
+export const TEXTRACT_INITIAL_WAIT_MS = 2500;
+export const TEXTRACT_POLL_MAX_ATTEMPTS = 45;
 
 export function isTextractResponseNotReady(
   status: number,
@@ -25,8 +25,8 @@ export function getTextractKeysForAttempt(
   fileKeys: string[],
   attempt: number,
 ): string[] {
-  if (fileKeys.length <= 1 || attempt >= 4) {
+  if (fileKeys.length <= 1 || attempt >= 2) {
     return fileKeys;
   }
-  return [fileKeys[0]];
+  return fileKeys;
 }

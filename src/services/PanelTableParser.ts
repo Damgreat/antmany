@@ -11,7 +11,11 @@ import {
   ParsedColumnLayout,
   ResultValue,
 } from '../types';
-import {summarizeExtractionAccuracy, buildAnalysisExtractionSlots} from '../utils/ocrExtractionValidation';
+import {
+  summarizeExtractionAccuracy,
+  buildAnalysisExtractionSlots,
+  buildExtractionAccuracyColumnSpecs,
+} from '../utils/ocrExtractionValidation';
 import {computeOverallOcrConfidence, capOverallScoreByExtraction} from '../utils/ocrTableConfidence';
 import * as AntigenData from './AntigenData';
 
@@ -177,6 +181,15 @@ function normalizeInsensitiveKey(raw: string): string {
     .toLowerCase();
 }
 
+/** Strip OCR junk (quotes, stars) before antigen header matching. */
+function sanitizeOcrHeaderLabel(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^\*+/, '')
+    .replace(/^["'`‘’""]+|["'`‘’""]+$/g, '')
+    .trim();
+}
+
 function normalizeExactKey(raw: string): string {
   return raw
     .normalize('NFKD')
@@ -264,7 +277,7 @@ function retryNormaliseResultValue(raw: string): {
     return {value: '+', exact: true, recovered: true, blankLike: false};
   }
 
-  if (/^N[T7]$/.test(compact) || compact === 'TN') {
+  if (compact === 'NT' || compact === 'N/T' || compact === 'NOTTESTED') {
     return {value: 'NT', exact: true, recovered: true, blankLike: false};
   }
 
@@ -592,6 +605,14 @@ function resolveAntigenValue(raw: string, lookup: Map<string, string>): string |
     return exact;
   }
 
+  const stripped = raw.trim().replace(/^\*+/, '');
+  if (stripped !== raw.trim()) {
+    const starResolved = resolveAntigenValue(stripped, lookup);
+    if (starResolved) {
+      return starResolved;
+    }
+  }
+
   const caseInsensitiveKey = normalizeInsensitiveKey(raw);
   const matches = uniqueValues(
     Array.from(lookup.entries())
@@ -600,6 +621,91 @@ function resolveAntigenValue(raw: string, lookup: Map<string, string>): string |
   );
 
   return matches.length === 1 ? matches[0] : null;
+}
+
+function antigenIndexForColumnInSpan(
+  colIndex: number,
+  span: GroupSpan,
+  specialColumns: SpecialColumns,
+): number {
+  let dataColIndex = 0;
+  for (let col = span.startCol; col < colIndex; col++) {
+    if (!isMetadataSourceColumn(col, specialColumns)) {
+      dataColIndex++;
+    }
+  }
+  return dataColIndex;
+}
+
+function resolveTruncatedAntigenLabel(
+  raw: string,
+  colIndex: number,
+  groupSpan: GroupSpan | null | undefined,
+  expectedAntigens: string[],
+  specialColumns: SpecialColumns,
+  lookup: Map<string, string>,
+): string | null {
+  const cleaned = sanitizeOcrHeaderLabel(raw);
+  const direct = resolveAntigenValue(cleaned, lookup);
+  if (direct) {
+    return direct;
+  }
+
+  if (expectedAntigens.length === 0) {
+    return null;
+  }
+  if (
+    groupSpan &&
+    (colIndex < groupSpan.startCol || colIndex > groupSpan.endCol)
+  ) {
+    return null;
+  }
+
+  const normalized = normalizeInsensitiveKey(cleaned);
+  if (normalized.length < 2) {
+    return null;
+  }
+
+  const prefixMatches = expectedAntigens.filter(antigen =>
+    normalizeInsensitiveKey(antigen).startsWith(normalized),
+  );
+  if (prefixMatches.length === 1) {
+    return prefixMatches[0];
+  }
+
+  const index = groupSpan
+    ? antigenIndexForColumnInSpan(colIndex, groupSpan, specialColumns)
+    : -1;
+  if (index >= 0 && index < expectedAntigens.length) {
+    const positional = expectedAntigens[index];
+    if (normalizeInsensitiveKey(positional).startsWith(normalized)) {
+      return positional;
+    }
+  }
+
+  if (prefixMatches.length > 1 && index >= 0) {
+    const positional = prefixMatches[Math.min(index, prefixMatches.length - 1)];
+    if (positional) {
+      return positional;
+    }
+  }
+
+  return null;
+}
+
+function reorderDescriptorsBySchema(
+  descriptors: ColumnDescriptor[],
+  schemaColumns: Array<{key: string}>,
+): ColumnDescriptor[] {
+  const order = new Map(schemaColumns.map((column, index) => [column.key, index]));
+  return [...descriptors].sort((left, right) => {
+    const leftOrder = order.get(left.antigen) ?? Number.MAX_SAFE_INTEGER;
+    const rightOrder = order.get(right.antigen) ?? Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) {
+      return leftOrder - rightOrder;
+    }
+    return left.sourceColumn - right.sourceColumn;
+  });
 }
 
 function resolveGroupValue(raw: string, lookup: Map<string, string>): string | null {
@@ -709,12 +815,15 @@ function getGroupSpanForColumn(groupSpans: GroupSpan[], colIndex: number): Group
   }
 
   return matches.sort((left, right) => {
+    const leftWidth = left.endCol - left.startCol;
+    const rightWidth = right.endCol - right.startCol;
+    if (leftWidth !== rightWidth) {
+      return leftWidth - rightWidth;
+    }
     if (left.row !== right.row) {
       return left.row - right.row;
     }
-    const leftWidth = left.endCol - left.startCol;
-    const rightWidth = right.endCol - right.startCol;
-    return rightWidth - leftWidth;
+    return left.startCol - right.startCol;
   })[0];
 }
 
@@ -901,6 +1010,178 @@ function classifySpecialColumn(headerPath: string[]): keyof SpecialColumns | und
   return undefined;
 }
 
+function getDeepestHeaderCells(coveringCells: RawTableCell[]): RawTableCell[] {
+  if (coveringCells.length === 0) {
+    return [];
+  }
+
+  const maxRow = Math.max(...coveringCells.map(cell => cell.row + cell.rowSpan - 1));
+  return coveringCells.filter(cell => cell.row + cell.rowSpan - 1 === maxRow);
+}
+
+function getColumnSpecificHeaderLabel(cell: RawTableCell, colIndex: number): string {
+  if (cell.colSpan <= 1) {
+    return cell.text.trim();
+  }
+
+  const tokens = splitHeaderTokens(cell.text);
+  if (tokens.length === cell.colSpan) {
+    return tokens[colIndex - cell.col] ?? '';
+  }
+
+  return cell.text.trim();
+}
+
+/** Prefer the innermost header label so parent "Rh-hr" group labels do not steal antigen columns. */
+function classifySpecialColumnFromDeepestHeader(
+  coveringCells: RawTableCell[],
+  colIndex: number,
+  antigenLookup: Map<string, string>,
+): keyof SpecialColumns | undefined {
+  const deepestCells = getDeepestHeaderCells(coveringCells);
+  for (const cell of deepestCells) {
+    if (resolvePerColumnToken(cell, colIndex, antigenLookup)) {
+      continue;
+    }
+
+    const label = getColumnSpecificHeaderLabel(cell, colIndex);
+    if (!label) {
+      continue;
+    }
+
+    const normalized = normalizeInsensitiveKey(label);
+    if (cell.colSpan !== 1) {
+      continue;
+    }
+    if (SPECIAL_COLUMN_ALIASES.result.includes(normalized)) {
+      return 'resultCol';
+    }
+    if (SPECIAL_COLUMN_ALIASES.cell.includes(normalized)) {
+      return 'cellNumberCol';
+    }
+    if (SPECIAL_COLUMN_ALIASES.donor.includes(normalized)) {
+      return 'donorNumberCol';
+    }
+    if (
+      SPECIAL_COLUMN_ALIASES.phenotype.includes(normalized) &&
+      !resolveAntigenValue(label, antigenLookup)
+    ) {
+      return 'phenotypeCol';
+    }
+  }
+
+  return undefined;
+}
+
+function isPhenotypeLikeCellText(raw: string): boolean {
+  const compact = raw.trim().replace(/\s+/g, '');
+  if (!compact || compact.length < 2 || compact.length > 16) {
+    return false;
+  }
+  if (isResultLikeToken(compact)) {
+    return false;
+  }
+  if (/^\d{5,}$/.test(compact)) {
+    return false;
+  }
+
+  return (
+    /^[Rr][0-9r''wR]*$/i.test(compact) ||
+    /^rr$/i.test(compact) ||
+    /^r['']r$/i.test(compact) ||
+    /^r['']{2}r$/i.test(compact)
+  );
+}
+
+function scoreColumnDataPattern(
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  col: number,
+  matcher: (text: string) => boolean,
+  maxRows = 10,
+): number {
+  let score = 0;
+  const lastRow = Math.min(grid.length - 1, dataStartRow + maxRows - 1);
+  for (let row = dataStartRow; row <= lastRow; row++) {
+    const text = grid[row]?.[col]?.text?.trim() ?? '';
+    if (matcher(text)) {
+      score++;
+    }
+  }
+  return score;
+}
+
+function inferMissingSpecialColumns(
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  groupSpans: GroupSpan[],
+  specialColumns: SpecialColumns,
+  columnDescriptors: ColumnDescriptor[],
+): void {
+  const rhSpan = groupSpans.find(span => span.group === 'Rh-hr');
+  if (!rhSpan) {
+    return;
+  }
+
+  const searchEnd = Math.min(rhSpan.startCol + 4, rhSpan.endCol);
+  const reservedCols = new Set(
+    [specialColumns.phenotypeCol, specialColumns.donorNumberCol, specialColumns.cellNumberCol].filter(
+      col => col > 0,
+    ),
+  );
+
+  if (specialColumns.phenotypeCol <= 0) {
+    let bestCol = -1;
+    let bestScore = 0;
+    for (let col = rhSpan.startCol; col <= searchEnd; col++) {
+      if (reservedCols.has(col)) {
+        continue;
+      }
+      const score = scoreColumnDataPattern(grid, dataStartRow, col, isPhenotypeLikeCellText);
+      if (score > bestScore) {
+        bestScore = score;
+        bestCol = col;
+      }
+    }
+    if (bestCol > 0 && bestScore >= 3) {
+      specialColumns.phenotypeCol = bestCol;
+      reservedCols.add(bestCol);
+    }
+  }
+
+  if (specialColumns.donorNumberCol <= 0) {
+    let bestCol = -1;
+    let bestScore = 0;
+    for (let col = rhSpan.startCol; col <= searchEnd; col++) {
+      if (reservedCols.has(col)) {
+        continue;
+      }
+      const score = scoreColumnDataPattern(grid, dataStartRow, col, isDonorLikeCellText);
+      if (score > bestScore) {
+        bestScore = score;
+        bestCol = col;
+      }
+    }
+    if (bestCol > 0 && bestScore >= 3) {
+      specialColumns.donorNumberCol = bestCol;
+      reservedCols.add(bestCol);
+    }
+  }
+
+  const specialColSet = new Set(
+    [specialColumns.phenotypeCol, specialColumns.donorNumberCol].filter(col => col > 0),
+  );
+  if (specialColSet.size === 0) {
+    return;
+  }
+
+  for (let index = columnDescriptors.length - 1; index >= 0; index--) {
+    if (specialColSet.has(columnDescriptors[index].sourceColumn)) {
+      columnDescriptors.splice(index, 1);
+    }
+  }
+}
+
 function toColumnDescriptor(
   sourceColumn: number,
   columnKey: string,
@@ -951,6 +1232,7 @@ function buildColumnDescriptor(
     group: string;
     groupAliases: string[];
   }>,
+  specialColumns: SpecialColumns,
 ): {descriptor?: ColumnDescriptor; specialColumn?: keyof SpecialColumns; headerPath: string[]} {
   const coveringCells = getCoveringHeaderCells(table, headerRows, colIndex);
   const headerPath = buildHeaderPathForColumn(table, headerRows, colIndex);
@@ -994,13 +1276,25 @@ function buildColumnDescriptor(
     }
   }
 
+  const groupName = groupSpan?.group || detectedGroup;
+  const expectedAntigens = groupName ? antigenGroups[groupName] ?? [] : [];
+
   for (let index = candidatePieces.length - 1; index >= 0; index--) {
-    const direct = resolveAntigenValue(candidatePieces[index], antigenLookup);
-    if (direct) {
+    const sanitizedPiece = sanitizeOcrHeaderLabel(candidatePieces[index]);
+    const resolved =
+      resolveTruncatedAntigenLabel(
+        sanitizedPiece,
+        colIndex,
+        groupSpan,
+        expectedAntigens,
+        specialColumns,
+        antigenLookup,
+      ) ?? resolveAntigenValue(sanitizedPiece, antigenLookup);
+    if (resolved) {
       return {
         descriptor: toColumnDescriptor(
           colIndex,
-          direct,
+          resolved,
           detectedGroup,
           headerPath,
           'exact',
@@ -1034,6 +1328,15 @@ function buildColumnDescriptor(
         };
       }
     }
+  }
+
+  const specialBeforeGroupSpan = classifySpecialColumnFromDeepestHeader(
+    coveringCells,
+    colIndex,
+    antigenLookup,
+  );
+  if (specialBeforeGroupSpan) {
+    return {specialColumn: specialBeforeGroupSpan, headerPath};
   }
 
   if (positionalFallback) {
@@ -1235,13 +1538,39 @@ function countResultLikeCellsInRange(
   return count;
 }
 
-function computeMetadataSkipOffset(span: GroupSpan, specialColumns: SpecialColumns): number {
+function computeMetadataSkipOffset(
+  span: GroupSpan,
+  specialColumns: SpecialColumns,
+  grid?: Array<Array<{text: string}>>,
+  dataStartRow?: number,
+): number {
   let lastMetadataCol = span.startCol - 1;
   for (const col of [specialColumns.phenotypeCol, specialColumns.donorNumberCol]) {
     if (col >= span.startCol && col <= span.endCol && col > lastMetadataCol) {
       lastMetadataCol = col;
     }
   }
+
+  if (grid && dataStartRow !== undefined) {
+    for (let col = span.startCol; col <= span.endCol; col++) {
+      if (
+        col === specialColumns.phenotypeCol ||
+        col === specialColumns.donorNumberCol ||
+        col === specialColumns.cellNumberCol
+      ) {
+        continue;
+      }
+      if (
+        columnHasDataSignal(grid, dataStartRow, col) &&
+        countResultLikeCellsInRange(grid, dataStartRow, col, col, 10) === 0
+      ) {
+        if (col > lastMetadataCol) {
+          lastMetadataCol = col;
+        }
+      }
+    }
+  }
+
   return lastMetadataCol >= span.startCol ? lastMetadataCol - span.startCol + 1 : 0;
 }
 
@@ -1261,10 +1590,14 @@ function computeGroupSpanAntigenOffset(
     return 0;
   }
   if (spanWidth === expectedAntigens.length) {
-    return specialColumns ? computeMetadataSkipOffset(span, specialColumns) : 0;
+    return specialColumns
+      ? computeMetadataSkipOffset(span, specialColumns, grid, dataStartRow)
+      : 0;
   }
 
-  const minOffset = specialColumns ? computeMetadataSkipOffset(span, specialColumns) : 0;
+  const minOffset = specialColumns
+    ? computeMetadataSkipOffset(span, specialColumns, grid, dataStartRow)
+    : 0;
   let bestOffset = minOffset;
   let bestScore = -1;
   for (let offset = minOffset; offset <= spanWidth - expectedAntigens.length; offset++) {
@@ -1347,6 +1680,346 @@ function refineSourceColumnByDataDensity(
   return bestColumn;
 }
 
+function mergeDetectedColumnsIntoHeaderMaps(
+  headerMapsByGroup: Map<string, Map<string, number>>,
+  columnDescriptors: ColumnDescriptor[],
+  spanByGroup: Map<string, GroupSpan>,
+  specialColumns: SpecialColumns,
+): void {
+  for (const descriptor of columnDescriptors) {
+    const groupName = descriptor.expectedGroup || descriptor.detectedGroup;
+    const span = spanByGroup.get(groupName);
+    if (
+      !span ||
+      descriptor.sourceColumn < span.startCol ||
+      descriptor.sourceColumn > span.endCol ||
+      isMetadataSourceColumn(descriptor.sourceColumn, specialColumns)
+    ) {
+      continue;
+    }
+
+    if (
+      descriptor.evidence !== 'exact' &&
+      descriptor.evidence !== 'combined' &&
+      descriptor.evidence !== 'compact'
+    ) {
+      continue;
+    }
+
+    const map = headerMapsByGroup.get(groupName) ?? new Map<string, number>();
+    const currentCol = map.get(descriptor.antigen);
+    if (currentCol === undefined) {
+      map.set(descriptor.antigen, descriptor.sourceColumn);
+      headerMapsByGroup.set(groupName, map);
+    }
+  }
+}
+
+function buildHeaderAntigenColumnMapInSpan(
+  table: RawTable,
+  headerRows: number[],
+  span: GroupSpan,
+  expectedAntigens: string[],
+  antigenLookup: Map<string, string>,
+  specialColumns: SpecialColumns,
+): Map<string, number> {
+  const map = new Map<string, number>();
+  for (let col = span.startCol; col <= span.endCol; col++) {
+    if (
+      col === specialColumns.phenotypeCol ||
+      col === specialColumns.donorNumberCol ||
+      col === specialColumns.cellNumberCol
+    ) {
+      continue;
+    }
+
+    const coveringCells = getCoveringHeaderCells(table, headerRows, col);
+    let mappedFromToken = false;
+    for (const cell of coveringCells) {
+      const tokenAntigen = resolvePerColumnToken(cell, col, antigenLookup);
+      if (tokenAntigen) {
+        map.set(tokenAntigen, col);
+        mappedFromToken = true;
+        break;
+      }
+    }
+    if (mappedFromToken) {
+      continue;
+    }
+
+    const headerPath = buildHeaderPathForColumn(table, headerRows, col);
+    for (const label of headerPath) {
+      const sanitizedLabel = sanitizeOcrHeaderLabel(label);
+      const antigen =
+        resolveTruncatedAntigenLabel(
+          sanitizedLabel,
+          col,
+          span,
+          expectedAntigens,
+          specialColumns,
+          antigenLookup,
+        ) ?? resolveAntigenValue(sanitizedLabel, antigenLookup);
+      if (antigen) {
+        map.set(antigen, col);
+        break;
+      }
+    }
+  }
+  return map;
+}
+
+function collectResultDataColumnsInSpan(
+  span: GroupSpan,
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  specialColumns: SpecialColumns,
+  minHits = 2,
+): number[] {
+  const dataColumns: number[] = [];
+  for (let col = span.startCol; col <= span.endCol; col++) {
+    if (isMetadataSourceColumn(col, specialColumns)) {
+      continue;
+    }
+    const resultLike = countResultLikeCellsInRange(grid, dataStartRow, col, col, 12);
+    if (resultLike >= minHits) {
+      dataColumns.push(col);
+      continue;
+    }
+    if (columnHasDataSignal(grid, dataStartRow, col)) {
+      continue;
+    }
+  }
+  return dataColumns.sort((left, right) => left - right);
+}
+
+function buildSequentialGroupAssignment(
+  expectedAntigens: string[],
+  dataColumns: number[],
+): Map<string, number> {
+  const assignment = new Map<string, number>();
+  expectedAntigens.forEach((antigen, index) => {
+    const sourceColumn = dataColumns[index];
+    if (sourceColumn !== undefined) {
+      assignment.set(antigen, sourceColumn);
+    }
+  });
+  return assignment;
+}
+
+function buildGroupColumnAssignment(
+  span: GroupSpan,
+  expectedAntigens: string[],
+  headerMap: Map<string, number>,
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  metadataSkip: number,
+  specialColumns: SpecialColumns,
+): Map<string, number> {
+  const assignment = new Map<string, number>();
+  const usedCols = new Set<number>();
+
+  for (const antigen of expectedAntigens) {
+    const headerCol = headerMap.get(antigen);
+    if (headerCol !== undefined && !usedCols.has(headerCol)) {
+      assignment.set(antigen, headerCol);
+      usedCols.add(headerCol);
+    }
+  }
+
+  const dataColumns = collectResultDataColumnsInSpan(
+    span,
+    grid,
+    dataStartRow,
+    specialColumns,
+    1,
+  );
+  const unusedDataColumns = dataColumns.filter(col => !usedCols.has(col));
+
+  let dataIndex = 0;
+  for (const antigen of expectedAntigens) {
+    if (assignment.has(antigen)) {
+      continue;
+    }
+    if (dataIndex < unusedDataColumns.length) {
+      assignment.set(antigen, unusedDataColumns[dataIndex]);
+      usedCols.add(unusedDataColumns[dataIndex]);
+      dataIndex++;
+      continue;
+    }
+    const fallbackCol = span.startCol + metadataSkip + expectedAntigens.indexOf(antigen);
+    if (fallbackCol <= span.endCol && !usedCols.has(fallbackCol)) {
+      assignment.set(antigen, fallbackCol);
+      usedCols.add(fallbackCol);
+    }
+  }
+
+  const sequentialAssignment = buildSequentialGroupAssignment(
+    expectedAntigens,
+    dataColumns,
+  );
+
+  const hasDuplicateCols = new Set(assignment.values()).size < assignment.size;
+  const headerCoverage = expectedAntigens.filter(antigen => headerMap.has(antigen)).length;
+  const headersSparse =
+    headerCoverage < Math.ceil(expectedAntigens.length * 0.45);
+  if (
+    sequentialAssignment.size > 0 &&
+    dataColumns.length >= Math.ceil(expectedAntigens.length * 0.5) &&
+    (hasDuplicateCols || headersSparse)
+  ) {
+    return sequentialAssignment;
+  }
+
+  return assignment;
+}
+
+function splitResultTokens(raw: string): string[] {
+  return raw
+    .trim()
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(Boolean);
+}
+
+function isDonorLikeCellText(raw: string): boolean {
+  const compact = raw.trim().replace(/\s+/g, '');
+  if (!compact) {
+    return false;
+  }
+  if (isPhenotypeLikeCellText(compact)) {
+    return false;
+  }
+  if (compact.length >= 7 && /^\d+$/.test(compact)) {
+    return true;
+  }
+  return (
+    compact.length >= 5 &&
+    /^[A-Z0-9]+$/i.test(compact) &&
+    /\d/.test(compact) &&
+    !isResultLikeToken(compact)
+  );
+}
+
+function isResultLikeToken(raw: string): boolean {
+  const resolved = resolveCellResultValue(raw);
+  return resolved.value !== '' && !resolved.blankLike;
+}
+
+type ResolveCellOptions = {
+  groupSpan?: GroupSpan | null;
+  specialColumns?: SpecialColumns;
+  groupAntigens?: string[];
+  antigen?: string;
+};
+
+function resolveCellValueFromRow(
+  row: Array<{text: string; confidence: number}>,
+  sourceColumn: number,
+  options?: ResolveCellOptions,
+): {text: string; confidence: number} {
+  const cell = row[sourceColumn] ?? {text: '', confidence: 100};
+  const trimmed = cell.text.trim();
+
+  if (trimmed) {
+    const tokens = splitResultTokens(trimmed);
+    if (tokens.length > 1 && options?.groupAntigens && options.antigen) {
+      const targetIndex = options.groupAntigens.indexOf(options.antigen);
+      if (targetIndex >= 0 && targetIndex < tokens.length) {
+        const token = tokens[targetIndex];
+        if (isResultLikeToken(token)) {
+          return {text: token, confidence: cell.confidence};
+        }
+      }
+    }
+
+    const resolved = resolveCellResultValue(trimmed);
+    if (resolved.blankLike || resolved.value !== '') {
+      return cell;
+    }
+  }
+
+  return cell;
+}
+
+function buildGroupMappingContext(
+  table: RawTable,
+  headerRows: number[],
+  groupSpans: GroupSpan[],
+  antigenGroups: AntigenGroups,
+  antigenLookup: Map<string, string>,
+  columnDescriptors: ColumnDescriptor[],
+  grid: Array<Array<{text: string; confidence: number}>>,
+  dataStartRow: number,
+  specialColumns: SpecialColumns,
+): {
+  spanByGroup: Map<string, GroupSpan>;
+  groupAssignments: Map<string, Map<string, number>>;
+} {
+  const spanByGroup = new Map<string, GroupSpan>();
+  for (const span of groupSpans) {
+    const current = spanByGroup.get(span.group);
+    const spanWidth = span.endCol - span.startCol;
+    const currentWidth = current ? current.endCol - current.startCol : -1;
+    if (!current || spanWidth > currentWidth) {
+      spanByGroup.set(span.group, span);
+    }
+  }
+
+  const headerMapsByGroup = new Map<string, Map<string, number>>();
+  for (const [groupName, span] of spanByGroup.entries()) {
+    headerMapsByGroup.set(
+      groupName,
+      buildHeaderAntigenColumnMapInSpan(
+        table,
+        headerRows,
+        span,
+        antigenGroups[groupName] ?? [],
+        antigenLookup,
+        specialColumns,
+      ),
+    );
+  }
+  mergeDetectedColumnsIntoHeaderMaps(
+    headerMapsByGroup,
+    columnDescriptors,
+    spanByGroup,
+    specialColumns,
+  );
+
+  const groupAssignments = new Map<string, Map<string, number>>();
+  for (const [groupName, span] of spanByGroup.entries()) {
+    const expectedAntigens = antigenGroups[groupName] ?? [];
+    if (expectedAntigens.length === 0) {
+      continue;
+    }
+    const metadataSkip = computeMetadataSkipOffset(span, specialColumns, grid, dataStartRow);
+    groupAssignments.set(
+      groupName,
+      buildGroupColumnAssignment(
+        span,
+        expectedAntigens,
+        headerMapsByGroup.get(groupName) ?? new Map(),
+        grid,
+        dataStartRow,
+        metadataSkip,
+        specialColumns,
+      ),
+    );
+  }
+
+  return {spanByGroup, groupAssignments};
+}
+
+function isMetadataSourceColumn(
+  sourceColumn: number,
+  specialColumns: SpecialColumns,
+): boolean {
+  return (
+    sourceColumn === specialColumns.phenotypeCol ||
+    sourceColumn === specialColumns.donorNumberCol
+  );
+}
+
 function buildDescriptorsFromSchemaAndSpans(
   columnDescriptors: ColumnDescriptor[],
   groupSpans: GroupSpan[],
@@ -1378,9 +2051,6 @@ function buildDescriptorsFromSchemaAndSpans(
   specialColumns: SpecialColumns,
 ): ColumnDescriptor[] {
   const byAntigen = new Map(columnDescriptors.map(descriptor => [descriptor.antigen, descriptor]));
-  const descriptorsByColumn = new Map(
-    columnDescriptors.map(descriptor => [descriptor.sourceColumn, descriptor]),
-  );
   const spanByGroup = new Map<string, GroupSpan>();
   for (const span of groupSpans) {
     const current = spanByGroup.get(span.group);
@@ -1391,33 +2061,64 @@ function buildDescriptorsFromSchemaAndSpans(
     }
   }
 
-  const spanOffsets = new Map<string, number>();
+  const headerMapsByGroup = new Map<string, Map<string, number>>();
   for (const [groupName, span] of spanByGroup.entries()) {
-    const expectedAntigens = antigenGroups[groupName] ?? [];
-    spanOffsets.set(
+    headerMapsByGroup.set(
       groupName,
-      computeGroupSpanAntigenOffset(
-        span,
-        expectedAntigens,
-        descriptorsByColumn,
+      buildHeaderAntigenColumnMapInSpan(
         table,
         headerRows,
+        span,
+        antigenGroups[groupName] ?? [],
         antigenLookup,
+        specialColumns,
+      ),
+    );
+  }
+  mergeDetectedColumnsIntoHeaderMaps(
+    headerMapsByGroup,
+    columnDescriptors,
+    spanByGroup,
+    specialColumns,
+  );
+
+  const groupAssignments = new Map<string, Map<string, number>>();
+  for (const [groupName, span] of spanByGroup.entries()) {
+    const expectedAntigens = antigenGroups[groupName] ?? [];
+    if (expectedAntigens.length === 0) {
+      continue;
+    }
+    const metadataSkip = computeMetadataSkipOffset(span, specialColumns, grid, dataStartRow);
+    groupAssignments.set(
+      groupName,
+      buildGroupColumnAssignment(
+        span,
+        expectedAntigens,
+        headerMapsByGroup.get(groupName) ?? new Map(),
         grid,
         dataStartRow,
+        metadataSkip,
         specialColumns,
       ),
     );
   }
 
   const result: ColumnDescriptor[] = [];
+  const usedSourceColumns = new Map<number, string>();
   for (const schemaColumn of schemaColumns) {
     const existing = byAntigen.get(schemaColumn.key);
-    const groupAntigens = antigenGroups[schemaColumn.group] ?? [];
-    const antigenIndex = groupAntigens.indexOf(schemaColumn.key);
     const span = spanByGroup.get(schemaColumn.group);
+    let sourceColumn = groupAssignments.get(schemaColumn.group)?.get(schemaColumn.key);
 
-    if (antigenIndex < 0 || !span) {
+    if (
+      sourceColumn === undefined &&
+      existing &&
+      !isMetadataSourceColumn(existing.sourceColumn, specialColumns)
+    ) {
+      sourceColumn = existing.sourceColumn;
+    }
+
+    if (sourceColumn === undefined) {
       if (existing) {
         result.push({
           ...existing,
@@ -1429,72 +2130,48 @@ function buildDescriptorsFromSchemaAndSpans(
       continue;
     }
 
-    const offset = spanOffsets.get(schemaColumn.group) ?? 0;
-    let sourceColumn = span.startCol + offset + antigenIndex;
-    sourceColumn = refineSourceColumnByDataDensity(grid, dataStartRow, sourceColumn, span);
+    const priorAntigen = usedSourceColumns.get(sourceColumn);
+    if (priorAntigen && priorAntigen !== schemaColumn.key && span) {
+      const groupAntigens = antigenGroups[schemaColumn.group] ?? [];
+      const metadataSkip = computeMetadataSkipOffset(span, specialColumns, grid, dataStartRow);
+      const reassigned = buildGroupColumnAssignment(
+        span,
+        groupAntigens,
+        headerMapsByGroup.get(schemaColumn.group) ?? new Map(),
+        grid,
+        dataStartRow,
+        metadataSkip,
+        specialColumns,
+      );
+      sourceColumn = reassigned.get(schemaColumn.key) ?? sourceColumn;
+    }
+
+    usedSourceColumns.set(sourceColumn, schemaColumn.key);
     const headerPath = buildHeaderPathForColumn(table, headerRows, sourceColumn);
-    const spanDescriptor = toColumnDescriptor(
-      sourceColumn,
-      schemaColumn.key,
-      schemaColumn.group,
-      headerPath,
-      existing?.sourceColumn === sourceColumn ? existing.evidence : 'group_span',
-      schemaColumnMap,
-      antigenToGroupMap,
-    );
+    const evidence =
+      existing?.sourceColumn === sourceColumn
+        ? existing.evidence
+        : headerMapsByGroup.get(schemaColumn.group)?.get(schemaColumn.key) === sourceColumn
+          ? 'exact'
+          : 'group_span';
 
-    if (!existing) {
-      result.push({
-        ...spanDescriptor,
-        kind: schemaColumn.kind,
-        required: schemaColumn.required,
-        expectedGroup: schemaColumn.group,
-      });
-      continue;
-    }
-
-    if (existing.sourceColumn === sourceColumn) {
-      result.push({
-        ...existing,
-        kind: schemaColumn.kind,
-        required: schemaColumn.required,
-        expectedGroup: schemaColumn.group,
-      });
-      continue;
-    }
-
-    const existingDensity = countResultLikeCellsInRange(
-      grid,
-      dataStartRow,
-      existing.sourceColumn,
-      existing.sourceColumn,
-      10,
-    );
-    const spanDensity = countResultLikeCellsInRange(
-      grid,
-      dataStartRow,
-      sourceColumn,
-      sourceColumn,
-      10,
-    );
-    result.push(
-      spanDensity >= existingDensity
-        ? {
-            ...spanDescriptor,
-            kind: schemaColumn.kind,
-            required: schemaColumn.required,
-            expectedGroup: schemaColumn.group,
-          }
-        : {
-            ...existing,
-            kind: schemaColumn.kind,
-            required: schemaColumn.required,
-            expectedGroup: schemaColumn.group,
-          },
-    );
+    result.push({
+      ...toColumnDescriptor(
+        sourceColumn,
+        schemaColumn.key,
+        schemaColumn.group,
+        headerPath,
+        evidence,
+        schemaColumnMap,
+        antigenToGroupMap,
+      ),
+      kind: schemaColumn.kind,
+      required: schemaColumn.required,
+      expectedGroup: schemaColumn.group,
+    });
   }
 
-  return result.sort((left, right) => left.sourceColumn - right.sourceColumn);
+  return result;
 }
 
 function mergeDetectedIntoProjection(
@@ -1740,8 +2417,8 @@ function shouldIgnoreUnmappedHeader(
   }
 
   return headerPath.every(label => {
-    const normalized = normalizeInsensitiveKey(label);
-    return (
+    const normalized = normalizeInsensitiveKey(sanitizeOcrHeaderLabel(label));
+    if (
       groupLookup.has(normalized) ||
       normalized === 'additionalantigens' ||
       normalized === 'antigens' ||
@@ -1750,7 +2427,10 @@ function shouldIgnoreUnmappedHeader(
       normalized === 'additionalcells' ||
       normalized === 'test' ||
       normalized === 'results'
-    );
+    ) {
+      return true;
+    }
+    return ['fy', 'le', 'lu', 'jk', 'kp', 'js'].includes(normalized);
   });
 }
 
@@ -1852,6 +2532,7 @@ export class PanelTableParser {
         this.antigenGroups,
         groupSpans,
         this.schemaColumnMap,
+        specialColumns,
       );
 
       if (descriptor) {
@@ -1878,6 +2559,14 @@ export class PanelTableParser {
         }
       }
     }
+
+    inferMissingSpecialColumns(
+      grid,
+      dataStartRow,
+      groupSpans,
+      specialColumns,
+      columnDescriptors,
+    );
 
     const stabilizedDescriptors = stabilizeDescriptorsFromGroupSpans(
       mainTable,
@@ -1925,26 +2614,31 @@ export class PanelTableParser {
     );
     if (projectedDescriptors && projectedDescriptors.length > 0) {
       const mappedAntigens = new Set(columnDescriptors.map(descriptor => descriptor.antigen));
-      const missingAnalysis = this.schemaColumns.filter(
-        column => column.kind === 'analysis' && !mappedAntigens.has(column.key),
-      );
-      if (missingAnalysis.length > 3) {
-        const projectedGroupMismatches = projectedDescriptors.filter(
-          descriptor =>
-            descriptor.detectedGroup &&
-            descriptor.expectedGroup &&
-            descriptor.detectedGroup !== descriptor.expectedGroup,
-        ).length;
-        if (projectedGroupMismatches === 0) {
-          columnDescriptors.length = 0;
-          columnDescriptors.push(
-            ...mergeDetectedIntoProjection(
-              detectedBeforeProjection,
-              projectedDescriptors,
-            ),
+      for (const projectedDescriptor of projectedDescriptors) {
+        if (!mappedAntigens.has(projectedDescriptor.antigen)) {
+          const detected = detectedBeforeProjection.find(
+            match => match.antigen === projectedDescriptor.antigen,
           );
+          columnDescriptors.push(
+            detected &&
+              EVIDENCE_SCORES[detected.evidence] >= EVIDENCE_SCORES.compact
+              ? {
+                  ...projectedDescriptor,
+                  sourceColumn: detected.sourceColumn,
+                  headerPath:
+                    detected.headerPath.length > 0
+                      ? detected.headerPath
+                      : projectedDescriptor.headerPath,
+                  evidence: detected.evidence,
+                }
+              : projectedDescriptor,
+          );
+          mappedAntigens.add(projectedDescriptor.antigen);
         }
       }
+      const reordered = reorderDescriptorsBySchema(columnDescriptors, this.schemaColumns);
+      columnDescriptors.length = 0;
+      columnDescriptors.push(...reordered);
     }
 
     const finalMappedColumns = new Set(
@@ -2063,6 +2757,18 @@ export class PanelTableParser {
       });
     }
 
+    const {spanByGroup, groupAssignments} = buildGroupMappingContext(
+      mainTable,
+      headerRows,
+      groupSpans,
+      this.antigenGroups,
+      this.antigenLookup,
+      columnDescriptors,
+      grid,
+      dataStartRow,
+      specialColumns,
+    );
+
     const cells: CellData[] = [];
     const cellConfidences: CellConfidence[][] = [];
     const lowConfidenceCells: CellConfidence[] = [];
@@ -2160,14 +2866,22 @@ export class PanelTableParser {
       }
 
       for (const descriptor of columnDescriptors) {
-        const valueCell = row[descriptor.sourceColumn] ?? {text: '', confidence: 100};
+        const groupName = descriptor.expectedGroup || descriptor.detectedGroup || '';
+        const groupSpan = spanByGroup.get(groupName) ?? null;
+        const groupAntigens = this.antigenGroups[groupName] ?? [];
+        const valueCell = resolveCellValueFromRow(row, descriptor.sourceColumn, {
+          groupSpan,
+          specialColumns,
+          groupAntigens,
+          antigen: descriptor.antigen,
+        });
         const normalized = resolveCellResultValue(valueCell.text);
         const isEmpty = normalized.value === '';
         const needsReview = !isEmpty && (!normalized.exact || normalized.value === '?');
         const isLowConfidence = !isEmpty && normalized.exact && valueCell.confidence < LOW_CONFIDENCE_WARN_THRESHOLD;
         const finalValue = isEmpty ? '' : needsReview && !normalized.exact ? '?' : normalized.value;
 
-        results[descriptor.antigen] = finalValue;
+        results[descriptor.antigen] = finalValue ?? '';
         const confidenceEntry: CellConfidence = {
           rowIndex: displayRowIndex,
           colIndex: descriptor.sourceColumn,
@@ -2214,23 +2928,20 @@ export class PanelTableParser {
       cellConfidences.push(rowConfidences);
     }
 
-    const analysisDescriptors = columnDescriptors.filter(descriptor => descriptor.kind === 'analysis');
-    const extractionN = cells.length;
-    const extractionX = analysisDescriptors.length;
-    const expectedAnalysisKeys = this.schemaColumns
-      .filter(column => column.kind === 'analysis')
-      .map(column => column.key);
-    const extractionSlots = buildAnalysisExtractionSlots(
-      cells,
+    const extractionColumns = buildExtractionAccuracyColumnSpecs(
       columnDescriptors.map(descriptor => ({
         key: descriptor.antigen,
         kind: descriptor.kind,
+        evidence: descriptor.evidence,
+        sourceColumn: descriptor.sourceColumn,
       })),
-      {
-        cellConfidences,
-        expectedKeys: expectedAnalysisKeys,
-      },
+      cells,
     );
+    const extractionN = cells.length;
+    const extractionX = extractionColumns.length;
+    const extractionSlots = buildAnalysisExtractionSlots(cells, extractionColumns, {
+      cellConfidences,
+    });
 
     const extractionSummary = summarizeExtractionAccuracy(extractionSlots, {
       lowConfidenceThreshold: LOW_CONFIDENCE_WARN_THRESHOLD,
@@ -2412,6 +3123,7 @@ export class PanelTableParser {
       expirationDate: '',
       panelType: 'Panel A',
       testName: '',
+      extractionAccuracyColumns: extractionColumns.map(column => column.key),
       columnLayout,
       columnGroups,
       unreadableCells,

@@ -84,6 +84,63 @@ export function filterAnalysisExtractionColumns<
   return columns.filter(column => column.kind === 'analysis');
 }
 
+export type ExtractionAccuracyColumn = {
+  key: string;
+  kind?: string;
+  evidence?: string;
+  sourceColumn?: number;
+};
+
+/**
+ * Columns included in n×X for extraction accuracy.
+ * Detected analysis columns always count; schema-only projections count only
+ * when at least one row has a value (empty projected columns must not deflate accuracy).
+ */
+export function filterColumnsForExtractionAccuracy<
+  T extends ExtractionAccuracyColumn,
+>(
+  columns: T[],
+  cells: Array<{results: Record<string, unknown>}>,
+): T[] {
+  return filterAnalysisExtractionColumns(columns).filter(column => {
+    if (column.evidence === 'schema_projection') {
+      return cells.some(
+        cell => normalizeExtractionCellValue(cell.results[column.key]) !== '',
+      );
+    }
+    if (column.evidence) {
+      return true;
+    }
+    const hasAnyValue = cells.some(
+      cell => normalizeExtractionCellValue(cell.results[column.key]) !== '',
+    );
+    const hasMappedSource =
+      typeof column.sourceColumn === 'number' && column.sourceColumn > 0;
+    return hasAnyValue || hasMappedSource;
+  });
+}
+
+export function buildExtractionAccuracyColumnSpecs(
+  columns: ExtractionAccuracyColumn[],
+  cells: Array<{results: Record<string, unknown>}>,
+): Array<{key: string; kind: 'analysis'}> {
+  return filterColumnsForExtractionAccuracy(columns, cells).map(column => ({
+    key: column.key,
+    kind: 'analysis' as const,
+  }));
+}
+
+export function resolveExtractionAccuracyColumns(
+  cells: Array<{results: Record<string, unknown>}>,
+  columns: ExtractionAccuracyColumn[],
+  storedKeys?: string[],
+): Array<{key: string; kind: 'analysis'}> {
+  if (storedKeys?.length) {
+    return storedKeys.map(key => ({key, kind: 'analysis' as const}));
+  }
+  return buildExtractionAccuracyColumnSpecs(columns, cells);
+}
+
 export function mergeAnalysisColumnKeys(
   columns: Array<{key: string; kind?: string}>,
   expectedKeys?: string[],
@@ -156,6 +213,82 @@ export function countUnresolvedAnalysisSlots(
       isInvalidExtractionSlot(cell.results.result, confByKey.get('result'))
     ) {
       count++;
+    }
+  });
+  return count;
+}
+
+/** Cells the user must edit: blank or unreadable (?). Excludes low-confidence-only slots. */
+function isRowIndexDonorPlaceholder(
+  donor: string,
+  cellId?: string,
+): boolean {
+  const normalized = donor.trim();
+  if (!normalized) {
+    return true;
+  }
+  if (cellId && normalized === cellId.trim()) {
+    return true;
+  }
+  return /^[1-9]\d?$/.test(normalized);
+}
+
+export type MetadataValidationSummary = {
+  slotCount: number;
+  invalidCount: number;
+  completenessPercent: number;
+  issues: string[];
+};
+
+/** Rh-hr phenotype and donor slots are required for panel verification. */
+export function computeMetadataCompleteness(
+  cells: Array<{cellId?: string; phenotype?: string; donorNumber?: string}>,
+): MetadataValidationSummary {
+  const issues: string[] = [];
+  let invalidCount = 0;
+  const slotCount = cells.length * 2;
+
+  cells.forEach((cell, index) => {
+    const phenotype = normalizeExtractionCellValue(cell.phenotype);
+    const donor = normalizeExtractionCellValue(cell.donorNumber);
+    const rowLabel = cell.cellId || String(index + 1);
+
+    if (phenotype === '') {
+      invalidCount++;
+      issues.push(`Row ${rowLabel}: missing Rh-hr phenotype`);
+    }
+
+    if (isRowIndexDonorPlaceholder(donor, cell.cellId)) {
+      invalidCount++;
+      issues.push(
+        donor === ''
+          ? `Row ${rowLabel}: missing Donor ID`
+          : `Row ${rowLabel}: Donor looks like row index (${donor})`,
+      );
+    }
+  });
+
+  return {
+    slotCount,
+    invalidCount,
+    completenessPercent: computeExtractionAccuracyPercent(slotCount, invalidCount),
+    issues,
+  };
+}
+
+export function countManualVerificationSlots(
+  cells: Array<{results: Record<string, unknown>}>,
+  columns: Array<{key: string; kind?: string}>,
+  cellConfidences?: BuildExtractionSlotsOptions['cellConfidences'],
+): number {
+  const keys = filterAnalysisExtractionColumns(columns).map(column => column.key);
+  let count = 0;
+  cells.forEach(cell => {
+    for (const key of keys) {
+      const normalized = normalizeExtractionCellValue(cell.results[key]);
+      if (normalized === '' || normalized === '?') {
+        count++;
+      }
     }
   });
   return count;

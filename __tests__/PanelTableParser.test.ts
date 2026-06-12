@@ -536,6 +536,53 @@ describe('PanelTableParser', () => {
     expect(result.panelData.cells[0].results.K).toBe('0');
   });
 
+  it('skips non-result columns inside Rh-hr span even when phenotype is not classified', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 10, 'MERGED_CELL');
+    appendCell('rh-sub', 2, 2, 'Rh-hr');
+    appendCell('donor-sub', 2, 3, 'Donor');
+    appendCell('rh-antigens', 2, 4, 'D C E c e f V Cw', 1, 8, 'MERGED_CELL');
+
+    appendCell('row1-cell', 3, 1, '1');
+    appendCell('row1-phenotype', 3, 2, 'R1R1');
+    appendCell('row1-donor', 3, 3, '6110302318014');
+    ['+', '0', '+', '0', '+', '0', '+', '0'].forEach((value, index) => {
+      appendCell(`row1-rh-${index}`, 3, 4 + index, value);
+    });
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-rhhr-inferred-metadata',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells[0].results.D).toBe('+');
+    expect(result.panelData.cells[0].results.C).toBe('0');
+    expect(result.panelData.cells[0].results.E).toBe('+');
+    expect(result.panelData.cells[0].phenotype).toBe('R1R1');
+    expect(result.panelData.cells[0].donorNumber).toBe('6110302318014');
+  });
+
   it('maps Rh-hr antigens after phenotype and donor metadata columns inside the group span', () => {
     const blocks: Block[] = [];
     const tableChildIds: string[] = [];
@@ -605,5 +652,360 @@ describe('PanelTableParser', () => {
     expect(result.panelData.cells[1].results.D).toBe('0');
     expect(result.panelData.cells[1].results.C).toBe('+');
     expect(result.panelData.cells[0].results.K).toBe('+');
+  });
+
+  it('maps Kell columns by header labels when physical order differs from schema order', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('kell-group', 1, 2, 'KELL', 1, 6, 'MERGED_CELL');
+    appendCell('k-header', 2, 2, 'K');
+    appendCell('little-k', 2, 3, 'k');
+    appendCell('jsa-header', 2, 4, 'Jsa');
+    appendCell('kpa-header', 2, 5, 'Kpa');
+    appendCell('jsb-header', 2, 6, 'Jsb');
+    appendCell('kpb-header', 2, 7, 'Kpb');
+
+    appendCell('row1-cell', 3, 1, '1');
+    appendCell('row1-k', 3, 2, '+');
+    appendCell('row1-little-k', 3, 3, '0');
+    appendCell('row1-jsa', 3, 4, '+');
+    appendCell('row1-kpa', 3, 5, '0');
+    appendCell('row1-jsb', 3, 6, '+');
+    appendCell('row1-kpb', 3, 7, '0');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-kell-reorder',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells[0].results.K).toBe('+');
+    expect(result.panelData.cells[0].results.k).toBe('0');
+    expect(result.panelData.cells[0].results.Jsa).toBe('+');
+    expect(result.panelData.cells[0].results.Kpa).toBe('0');
+    expect(result.panelData.cells[0].results.Jsb).toBe('+');
+    expect(result.panelData.cells[0].results.Kpb).toBe('0');
+  });
+
+  it('maps each Rh-hr antigen to a distinct data column after donor metadata', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('donor-header', 1, 2, 'Donor');
+    appendCell('rh-group', 1, 3, 'Rh-hr', 1, 8, 'MERGED_CELL');
+    appendCell('d-header', 2, 3, 'D');
+    appendCell('c-header', 2, 4, 'C');
+    appendCell('e-header', 2, 5, 'E');
+    appendCell('little-c-header', 2, 6, 'c');
+    appendCell('little-e-header', 2, 7, 'e');
+    appendCell('f-header', 2, 8, 'f');
+    appendCell('v-header', 2, 9, 'V');
+    appendCell('cw-header', 2, 10, 'Cw');
+
+    const rowPatterns = [
+      ['+', '0', '0', '0', '+', '0', 'NT', '0'],
+      ['+', '0', '+', '0', '+', '0', 'NT', '0'],
+      ['+', '0', '+', '+', '0', '0', 'NT', '0'],
+    ];
+
+    rowPatterns.forEach((pattern, rowOffset) => {
+      const row = 3 + rowOffset;
+      appendCell(`row${row}-cell`, row, 1, String(rowOffset + 1));
+      appendCell(`row${row}-donor`, row, 2, `611030231801${rowOffset}`);
+      pattern.forEach((value, index) => {
+        appendCell(`row${row}-rh-${index}`, row, 3 + index, value);
+      });
+    });
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-rhhr-distinct',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    const layout = result.panelData.metadata.columnLayout ?? [];
+    const sourceByKey = new Map(
+      layout.filter(column => column.kind === 'analysis').map(column => [column.key, column.sourceColumn]),
+    );
+    const rhKeys = ['D', 'C', 'E', 'c', 'e', 'f', 'V', 'Cw'];
+    const sourceCols = rhKeys.map(key => sourceByKey.get(key));
+    expect(new Set(sourceCols).size).toBe(rhKeys.length);
+    expect(result.panelData.cells[0].results.D).toBe('+');
+    expect(result.panelData.cells[0].results.C).toBe('0');
+    expect(result.panelData.cells[0].results.E).toBe('0');
+    expect(result.panelData.cells[0].results.V).toBe('NT');
+    expect(result.panelData.cells[1].results.E).toBe('+');
+  });
+
+  it('does not treat OCR noise N7 as NT', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+    const appendCell = (id: string, row: number, col: number, text: string) => {
+      const cellBlocks = buildCell(id, row, col, text);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('e-header', 1, 2, 'E');
+    appendCell('row1-cell', 2, 1, '1');
+    appendCell('row1-e', 2, 2, 'N7');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-n7-not-nt',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells[0].results.E).not.toBe('NT');
+  });
+
+  it('realigns Rh-hr columns when merged header has colSpan 1 and per-column labels are wrong', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 10, 'MERGED_CELL');
+    appendCell('rh-antigens', 2, 2, 'D C E c e f V Cw', 1, 1, 'MERGED_CELL');
+    appendCell('c-h', 2, 3, 'C');
+    appendCell('e-h', 2, 4, 'E');
+    appendCell('d-h', 2, 5, 'D');
+
+    const pattern = ['+', '0', '0', '0', '+', '0', 'NT', '0'];
+    appendCell('row1-cell', 3, 1, '1');
+    pattern.forEach((value, index) => {
+      appendCell(`row1-rh-${index}`, 3, 2 + index, value);
+    });
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-scrambled-rhhr',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells[0].results.D).toBe('+');
+    expect(result.panelData.cells[0].results.C).toBe('0');
+    expect(result.panelData.cells[0].results.E).toBe('0');
+    expect(result.panelData.cells[0].results.e).toBe('+');
+    expect(result.panelData.cells[0].results.V).toBe('NT');
+  });
+
+  it('maps truncated OCR headers Fy and Le to Fya and Lea using group position', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 3, 'MERGED_CELL');
+    appendCell('kell-group', 1, 5, 'KELL', 1, 2, 'MERGED_CELL');
+    appendCell('duffy-group', 1, 7, 'DUFFY', 1, 2, 'MERGED_CELL');
+    appendCell('kidd-group', 1, 9, 'KIDD', 1, 2, 'MERGED_CELL');
+    appendCell('lewis-group', 1, 11, 'LEWIS', 1, 2, 'MERGED_CELL');
+
+    appendCell('rh-cols', 2, 2, 'D C E', 1, 3, 'MERGED_CELL');
+    appendCell('kell-cols', 2, 5, 'K k', 1, 2, 'MERGED_CELL');
+    appendCell('fy-header', 2, 7, 'Fy');
+    appendCell('fyb-header', 2, 8, 'Fyb');
+    appendCell('jk-cols', 2, 9, 'Jka Jkb', 1, 2, 'MERGED_CELL');
+    appendCell('le-header', 2, 11, 'Le');
+    appendCell('leb-header', 2, 12, 'Leb');
+
+    appendCell('row1-cell', 3, 1, '1');
+    appendCell('row1-d', 3, 2, '+');
+    appendCell('row1-c', 3, 3, '0');
+    appendCell('row1-e', 3, 4, '0');
+    appendCell('row1-k', 3, 5, '+');
+    appendCell('row1-kk', 3, 6, '0');
+    appendCell('row1-fya', 3, 7, '+');
+    appendCell('row1-fyb', 3, 8, '0');
+    appendCell('row1-jka', 3, 9, '0');
+    appendCell('row1-jkb', 3, 10, '+');
+    appendCell('row1-lea', 3, 11, '0');
+    appendCell('row1-leb', 3, 12, '+');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-truncated-headers',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells[0].results.Fya).toBe('+');
+    expect(result.panelData.cells[0].results.Fyb).toBe('0');
+    expect(result.panelData.cells[0].results.Lea).toBe('0');
+    expect(result.panelData.cells[0].results.Leb).toBe('+');
+    expect(result.parseErrors.some(error => error.includes('Unmapped header column 7'))).toBe(
+      false,
+    );
+    expect(result.parseErrors.some(error => error.includes('Unmapped header column 11'))).toBe(
+      false,
+    );
+  });
+
+  it('maps Fy" with OCR quote inside a nested narrow DUFFY span', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('wide-antigens', 1, 7, 'Antigens', 1, 6, 'MERGED_CELL');
+    appendCell('duffy-group', 1, 7, 'DUFFY', 1, 2, 'MERGED_CELL');
+    appendCell('lewis-group', 1, 11, 'LEWIS', 1, 2, 'MERGED_CELL');
+    appendCell('fy-header', 2, 7, 'Fy"');
+    appendCell('fyb-header', 2, 8, 'Fyb');
+    appendCell('le-header', 2, 11, 'Le');
+    appendCell('leb-header', 2, 12, 'Leb');
+
+    appendCell('row1-cell', 3, 1, '1');
+    appendCell('row1-fya', 3, 7, '+');
+    appendCell('row1-fyb', 3, 8, '0');
+    appendCell('row1-lea', 3, 11, '0');
+    appendCell('row1-leb', 3, 12, '+');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-fy-quote-nested-span',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells[0].results.Fya).toBe('+');
+    expect(result.panelData.cells[0].results.Fyb).toBe('0');
+    expect(result.panelData.cells[0].results.Lea).toBe('0');
+    expect(result.panelData.cells[0].results.Leb).toBe('+');
+    expect(result.parseErrors.some(error => error.includes('Unmapped header column 7'))).toBe(
+      false,
+    );
+    expect(result.parseErrors.some(error => error.includes('Unmapped header column 11'))).toBe(
+      false,
+    );
+  });
+
+  it('keeps analysis columns in ALBA schema order regardless of source column index', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 5, 'MERGED_CELL');
+    appendCell('rh-cols', 2, 2, 'c D e f E', 1, 5, 'MERGED_CELL');
+    appendCell('row1-cell', 3, 1, '1');
+    appendCell('row1-c', 3, 2, '0');
+    appendCell('row1-d', 3, 3, '+');
+    appendCell('row1-e', 3, 4, '+');
+    appendCell('row1-f', 3, 5, '0');
+    appendCell('row1-E', 3, 6, '0');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-scrambled-source-cols',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ALBA');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+    const analysisKeys =
+      result.panelData.metadata.columnLayout
+        ?.filter(column => column.kind === 'analysis')
+        .map(column => column.key) ?? [];
+
+    expect(analysisKeys).toEqual(['D', 'E', 'c', 'e', 'f']);
+    expect(analysisKeys).not.toEqual(['c', 'D', 'e', 'f', 'E']);
   });
 });

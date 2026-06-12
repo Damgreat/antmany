@@ -1,6 +1,11 @@
 import {
+  buildExtractionAccuracyColumnSpecs,
   computeExtractionAccuracyPercent,
   computeLiveExtractionAccuracy,
+  computeMetadataCompleteness,
+  countManualVerificationSlots,
+  countUnresolvedAnalysisSlots,
+  filterColumnsForExtractionAccuracy,
   getExtractionInvalidReason,
   isInvalidExtractionSlot,
   logExtractionAccuracyBreakdown,
@@ -134,6 +139,102 @@ describe('OCR extraction accuracy calculation', () => {
       expect(isInvalidExtractionSlot('+', 40)).toBe(true);
       expect(getExtractionInvalidReason('+', 40)).toBe('low_confidence');
       expect(isInvalidExtractionSlot('+', 90)).toBe(false);
+    });
+  });
+
+  describe('filterColumnsForExtractionAccuracy', () => {
+    it('excludes schema_projection columns with no extracted values', () => {
+      const columns = [
+        {key: 'D', kind: 'analysis' as const, evidence: 'header'},
+        {key: 'C', kind: 'analysis' as const, evidence: 'schema_projection'},
+      ];
+      const cells = [{results: {D: '+', C: ''}}];
+
+      expect(filterColumnsForExtractionAccuracy(columns, cells).map(c => c.key)).toEqual([
+        'D',
+      ]);
+      expect(buildExtractionAccuracyColumnSpecs(columns, cells)).toEqual([
+        {key: 'D', kind: 'analysis'},
+      ]);
+    });
+
+    it('includes schema_projection columns when at least one row has data', () => {
+      const columns = [
+        {key: 'D', kind: 'analysis' as const, evidence: 'schema_projection'},
+      ];
+      const cells = [{results: {D: '+'}}];
+
+      expect(filterColumnsForExtractionAccuracy(columns, cells).map(c => c.key)).toEqual([
+        'D',
+      ]);
+    });
+  });
+
+  describe('countManualVerificationSlots', () => {
+    it('counts only empty and unreadable cells, not low-confidence values', () => {
+      const cells = [
+        {results: {D: '+', C: '', E: '?'}},
+        {results: {D: '+', C: '0', E: '+' }},
+      ];
+      const columns = [
+        {key: 'D', kind: 'analysis' as const},
+        {key: 'C', kind: 'analysis' as const},
+        {key: 'E', kind: 'analysis' as const},
+      ];
+
+      expect(countManualVerificationSlots(cells, columns)).toBe(2);
+    });
+  });
+
+  describe('countUnresolvedAnalysisSlots', () => {
+    it('does not count empty result column when includeResult is false', () => {
+      const cells = Array.from({length: 10}, () => ({
+        results: {D: '+', result: ''},
+      }));
+      const columns = [
+        {key: 'D', kind: 'analysis' as const},
+        {key: 'result', kind: 'result' as const},
+      ];
+
+      expect(
+        countUnresolvedAnalysisSlots(cells, columns, undefined, true),
+      ).toBe(10);
+      expect(
+        countUnresolvedAnalysisSlots(cells, columns, undefined, false),
+      ).toBe(0);
+    });
+
+    it('counts only analysis empties without inflating from result column', () => {
+      const cells = [
+        {results: {D: '+', C: '', result: ''}},
+        {results: {D: '0', C: '', result: ''}},
+      ];
+      const columns = [
+        {key: 'D', kind: 'analysis' as const},
+        {key: 'C', kind: 'analysis' as const},
+        {key: 'result', kind: 'result' as const},
+      ];
+
+      expect(
+        countUnresolvedAnalysisSlots(cells, columns, undefined, true),
+      ).toBe(4);
+      expect(
+        countUnresolvedAnalysisSlots(cells, columns, undefined, false),
+      ).toBe(2);
+    });
+  });
+
+  describe('computeMetadataCompleteness', () => {
+    it('flags missing phenotype and row-index donor placeholders', () => {
+      const summary = computeMetadataCompleteness([
+        {cellId: '1', phenotype: '', donorNumber: '1'},
+        {cellId: '2', phenotype: 'rr', donorNumber: '2069930'},
+      ]);
+
+      expect(summary.invalidCount).toBe(2);
+      expect(summary.completenessPercent).toBe(50);
+      expect(summary.issues.some(issue => issue.includes('missing Rh-hr'))).toBe(true);
+      expect(summary.issues.some(issue => issue.includes('row index'))).toBe(true);
     });
   });
 

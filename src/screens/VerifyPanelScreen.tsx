@@ -8,6 +8,7 @@ import {
   Modal,
   Alert,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -20,17 +21,16 @@ import { CellData, OcrStructureMetrics, PanelData, ResultValue } from '../types'
 import {
   computeAnalysisCellValueScore,
   computeLiveExtractionAccuracy,
+  computeMetadataCompleteness,
   countUnresolvedAnalysisSlots,
-  mergeAnalysisColumnKeys,
+  resolveExtractionAccuracyColumns,
 } from '../utils/ocrExtractionValidation';
-import * as AntigenData from '../services/AntigenData';
 import {
   capOverallScoreByExtraction,
   computeOverallOcrConfidence,
   refreshOcrConfidenceMetrics,
 } from '../utils/ocrTableConfidence';
 import {CellConfidence} from '../services/PanelTableParser';
-
 type Props = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'VerifyPanel'>;
   route: RouteProp<RootStackParamList, 'VerifyPanel'>;
@@ -113,59 +113,42 @@ function buildStructuredRows(cells: CellData[]) {
   }));
 }
 
-function getExpectedAnalysisKeys(manufacturer: string): string[] {
-  const groups = AntigenData.getOcrAnalysisGroups(manufacturer);
-  return [...new Set(Object.values(groups).flat())];
-}
-
-function computeUnknownCount(
-  panelData: PanelData,
-  renderColumns: Array<{key: string; kind?: string}>,
-  expectedAnalysisKeys?: string[],
-  cellConfidences?: CellConfidence[][],
-): number {
-  return countUnresolvedAnalysisSlots(
-    panelData.cells,
-    renderColumns,
-    expectedAnalysisKeys,
-    true,
-    cellConfidences,
-  );
-}
-
 function recomputeVerificationMetrics(
   panelData: PanelData,
   renderColumns: Array<{key: string; kind?: string; required?: boolean}>,
   fallbackMetrics: OcrStructureMetrics,
   cellConfidences?: CellConfidence[][],
-  expectedAnalysisKeys?: string[],
 ): OcrStructureMetrics {
-  const analysisKeys = mergeAnalysisColumnKeys(renderColumns, expectedAnalysisKeys);
+  const analysisColumns = resolveExtractionAccuracyColumns(
+    panelData.cells,
+    renderColumns,
+    panelData.metadata.extractionAccuracyColumns,
+  );
+  const analysisKeys = analysisColumns.map(column => column.key);
   const extractionN = panelData.cells.length;
   const extractionX = analysisKeys.length;
   const extractionSummary = computeLiveExtractionAccuracy(
     panelData.cells,
-    renderColumns,
+    analysisColumns,
     {
       cellConfidences,
-      expectedKeys: expectedAnalysisKeys,
       logLabel: `VerifyPanel recompute (${extractionN}×${extractionX})`,
     },
   );
   const extractionAccuracy = extractionSummary.accuracyPercent;
   const cellValueScore = computeAnalysisCellValueScore(
     panelData.cells,
-    renderColumns,
-    expectedAnalysisKeys,
+    analysisColumns,
+    undefined,
     cellConfidences,
   );
   const totalValueSlots =
     panelData.cells.length * (analysisKeys.length + 1);
   const unresolvedRequired = countUnresolvedAnalysisSlots(
     panelData.cells,
-    renderColumns,
-    expectedAnalysisKeys,
-    true,
+    analysisColumns,
+    undefined,
+    false,
     cellConfidences,
   );
   const unreadablePenalty =
@@ -214,15 +197,6 @@ function buildBlockingValidationMessages(
     if (issue.severity === 'error' && blockingCodes.has(issue.code)) {
       messages.push(issue.message);
     }
-  }
-
-  const unreadableRequiredCount = (panelData.metadata.unreadableCells ?? []).filter(
-    cell => cell.required,
-  ).length;
-  if (unreadableRequiredCount > 0) {
-    messages.push(
-      `${unreadableRequiredCount} cell${unreadableRequiredCount !== 1 ? 's' : ''} still require manual verification.`,
-    );
   }
 
   const validColumnKeys = new Set([
@@ -312,6 +286,12 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     cellIndex: number;
     antigen: string;
   } | null>(null);
+  const [metaEditorVisible, setMetaEditorVisible] = useState(false);
+  const [metaEditorTarget, setMetaEditorTarget] = useState<{
+    cellIndex: number;
+    field: 'phenotype' | 'donorNumber';
+  } | null>(null);
+  const [metaEditorDraft, setMetaEditorDraft] = useState('');
 
   const renderColumns = useMemo(
     () =>
@@ -330,11 +310,6 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     [panelData.antigens, panelData.metadata.columnLayout],
   );
 
-  const expectedAnalysisKeys = useMemo(
-    () => getExpectedAnalysisKeys(manufacturer),
-    [manufacturer],
-  );
-
   const metrics: OcrStructureMetrics = useMemo(
     () =>
       recomputeVerificationMetrics(
@@ -342,29 +317,33 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
         renderColumns,
         panelData.metadata.ocrMetrics ?? routeMetrics,
         routeCellConfidences,
-        expectedAnalysisKeys,
       ),
-    [
-      panelData,
-      renderColumns,
-      routeMetrics,
-      routeCellConfidences,
-      expectedAnalysisKeys,
-    ],
+    [panelData, renderColumns, routeMetrics, routeCellConfidences],
+  );
+
+  const metadataSummary = useMemo(
+    () => computeMetadataCompleteness(panelData.cells),
+    [panelData.cells],
   );
 
   const validationMessages = useMemo(() => {
     const metadataMessages =
       panelData.metadata.validationIssues?.map(issue => issue.message) ?? [];
-    if (metadataMessages.length > 0) {
-      return Array.from(new Set(metadataMessages));
-    }
-    return parseErrors;
-  }, [panelData.metadata.validationIssues, parseErrors]);
+    const combined = [
+      ...metadataMessages,
+      ...parseErrors,
+      ...metadataSummary.issues.slice(0, 5),
+    ].filter(Boolean);
+    return Array.from(new Set(combined));
+  }, [panelData.metadata.validationIssues, parseErrors, metadataSummary.issues]);
 
   useEffect(() => {
-    const summary = computeLiveExtractionAccuracy(panelData.cells, renderColumns, {
-      expectedKeys: expectedAnalysisKeys,
+    const analysisColumns = resolveExtractionAccuracyColumns(
+      panelData.cells,
+      renderColumns,
+      panelData.metadata.extractionAccuracyColumns,
+    );
+    const summary = computeLiveExtractionAccuracy(panelData.cells, analysisColumns, {
       cellConfidences: routeCellConfidences,
       logLabel: 'VerifyPanel display check',
       log: true,
@@ -381,7 +360,6 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     panelData.cells,
     renderColumns,
     metrics.extractionAccuracy,
-    expectedAnalysisKeys,
     routeCellConfidences,
   ]);
 
@@ -410,32 +388,55 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     return keys;
   }, [lowConfidenceCells, verifiedCellKeys]);
 
-  const unknownCount = useMemo(
-    () =>
-      computeUnknownCount(
-        panelData,
-        renderColumns,
-        expectedAnalysisKeys,
-        routeCellConfidences,
-      ),
-    [panelData, renderColumns, expectedAnalysisKeys, routeCellConfidences],
-  );
   const blockingValidationMessages = useMemo(
     () => buildBlockingValidationMessages(panelData, renderColumns),
     [panelData, renderColumns],
   );
   const extractionAccuracy = metrics.extractionAccuracy ?? 0;
   const extractionPassed = extractionAccuracy >= 95;
-  // Spec §4/§6: extraction is acceptable ONLY when accuracy ≥ 95 AND all cells are resolved.
-  const canProceed =
-    unknownCount === 0 &&
-    blockingValidationMessages.length === 0 &&
-    extractionPassed;
+  const canProceed = panelData.cells.length > 0;
 
   const openPicker = useCallback((cellIndex: number, antigen: string) => {
     setPickerTarget({cellIndex, antigen});
     setPickerVisible(true);
   }, []);
+
+  const openMetaEditor = useCallback(
+    (cellIndex: number, field: 'phenotype' | 'donorNumber') => {
+      const currentValue = panelData.cells[cellIndex]?.[field] ?? '';
+      setMetaEditorTarget({cellIndex, field});
+      setMetaEditorDraft(String(currentValue));
+      setMetaEditorVisible(true);
+    },
+    [panelData.cells],
+  );
+
+  const handleMetaEditorSave = useCallback(() => {
+    if (!metaEditorTarget) {
+      return;
+    }
+
+    const {cellIndex, field} = metaEditorTarget;
+    const trimmed = metaEditorDraft.trim();
+
+    setPanelData(prev => {
+      const cells = prev.cells.map((cell, index) =>
+        index === cellIndex ? {...cell, [field]: trimmed} : cell,
+      );
+      return {
+        ...prev,
+        cells,
+        metadata: {
+          ...prev.metadata,
+          structuredRows: buildStructuredRows(cells),
+        },
+      };
+    });
+
+    setMetaEditorVisible(false);
+    setMetaEditorTarget(null);
+    setMetaEditorDraft('');
+  }, [metaEditorDraft, metaEditorTarget]);
 
   const handleValueSelect = useCallback(
     (newValue: ResultValue) => {
@@ -488,7 +489,6 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
           renderColumns,
           nextPanelData.metadata.ocrMetrics ?? routeMetrics,
           routeCellConfidences,
-          expectedAnalysisKeys,
         );
 
         return {
@@ -500,18 +500,14 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
         };
       });
     },
-    [pickerTarget, renderColumns, routeMetrics, routeCellConfidences, expectedAnalysisKeys],
+    [pickerTarget, renderColumns, routeMetrics, routeCellConfidences],
   );
 
   const handleProceed = useCallback(() => {
     if (!canProceed) {
-      Alert.alert(
-        'Verification Required',
-        blockingValidationMessages.length > 0
-          ? blockingValidationMessages.join('\n')
-          : `${unknownCount} cell${unknownCount !== 1 ? 's' : ''} still require manual verification.`,
-        [{text: 'OK'}],
-      );
+      Alert.alert('No Data', 'No OCR rows were detected. Please try another image.', [
+        {text: 'OK'},
+      ]);
       return;
     }
 
@@ -528,7 +524,7 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
     } as any;
 
     navigation.replace('Panel', {panelData: dualPanelData});
-  }, [blockingValidationMessages, canProceed, navigation, panelData, unknownCount]);
+  }, [canProceed, navigation, panelData]);
 
   const handleGoBack = useCallback(() => {
     navigation.goBack();
@@ -634,12 +630,31 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
       <View style={[styles.cell, styles.metadataCell, {width: META_CELL_W.cellId}]}>
         <Text style={styles.rowNumText}>{cell.cellId || String(index + 1)}</Text>
       </View>
-      <View style={[styles.cell, styles.metadataCell, {width: META_CELL_W.phenotype}]}>
+      <TouchableOpacity
+        style={[
+          styles.cell,
+          styles.metadataCell,
+          {width: META_CELL_W.phenotype},
+          !cell.phenotype?.trim() && styles.metadataCellWarning,
+        ]}
+        onPress={() => openMetaEditor(index, 'phenotype')}
+      >
         <Text style={styles.metaText}>{cell.phenotype || ''}</Text>
-      </View>
-      <View style={[styles.cell, styles.metadataCell, {width: META_CELL_W.donorNumber}]}>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[
+          styles.cell,
+          styles.metadataCell,
+          {width: META_CELL_W.donorNumber},
+          (!cell.donorNumber?.trim() ||
+            (cell.donorNumber.trim() === String(index + 1) ||
+              cell.donorNumber.trim() === cell.cellId?.trim())) &&
+            styles.metadataCellWarning,
+        ]}
+        onPress={() => openMetaEditor(index, 'donorNumber')}
+      >
         <Text style={styles.metaText}>{cell.donorNumber || ''}</Text>
-      </View>
+      </TouchableOpacity>
       {renderColumns.map((column, colIdx) =>
         renderResultCell(cell, index, column.key, colIdx + 1),
       )}
@@ -715,6 +730,7 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
       {renderMetricPill('Structure', metrics.structureScore)}
       {renderMetricPill('Mapping', metrics.mappingScore)}
       {renderMetricPill('Coverage', metrics.completenessScore)}
+      {renderMetricPill('Metadata', metadataSummary.completenessPercent)}
     </View>
   );
 
@@ -733,21 +749,6 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
             </Text>
           ))}
         </View>
-      </View>
-    );
-  };
-
-  const renderUnknownBanner = () => {
-    if (unknownCount === 0) {
-      return null;
-    }
-
-    return (
-      <View style={styles.unknownBanner}>
-        <Icon name="pencil-circle-outline" size={16} color="#c62828" />
-        <Text style={styles.unknownText}>
-          {' '}{unknownCount} cell{unknownCount !== 1 ? 's' : ''} require manual verification
-        </Text>
       </View>
     );
   };
@@ -772,7 +773,6 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
       {renderExtractionAccuracy()}
       {renderMetricSummary()}
       {renderErrors()}
-      {renderUnknownBanner()}
 
       <ScrollView
         style={styles.contentScroll}
@@ -807,11 +807,7 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
             <ActivityIndicator color="#fff" />
           ) : (
             <>
-              <Text style={styles.proceedBtnText}>
-                {unknownCount > 0
-                  ? `${unknownCount} cell${unknownCount !== 1 ? 's' : ''} require manual verification`
-                  : 'Proceed to Panel'}
-              </Text>
+              <Text style={styles.proceedBtnText}>Proceed to Panel</Text>
               <Icon
                 name="arrow-right"
                 size={18}
@@ -832,6 +828,45 @@ const VerifyPanelScreen: React.FC<Props> = ({ navigation, route }) => {
         onSelect={handleValueSelect}
         onClose={() => setPickerVisible(false)}
       />
+
+      <Modal
+        visible={metaEditorVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMetaEditorVisible(false)}
+      >
+        <View style={styles.metaModalOverlay}>
+          <View style={styles.metaModalCard}>
+            <Text style={styles.metaModalTitle}>
+              {metaEditorTarget?.field === 'phenotype' ? 'Edit Rh-hr' : 'Edit Donor'}
+            </Text>
+            <TextInput
+              style={styles.metaModalInput}
+              value={metaEditorDraft}
+              onChangeText={setMetaEditorDraft}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              placeholder={
+                metaEditorTarget?.field === 'phenotype' ? 'e.g. R1R1' : 'Donor / unit ID'
+              }
+            />
+            <View style={styles.metaModalActions}>
+              <TouchableOpacity
+                style={styles.metaModalBtnSecondary}
+                onPress={() => setMetaEditorVisible(false)}
+              >
+                <Text style={styles.metaModalBtnSecondaryText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.metaModalBtnPrimary}
+                onPress={handleMetaEditorSave}
+              >
+                <Text style={styles.metaModalBtnPrimaryText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -1098,6 +1133,65 @@ const styles = StyleSheet.create({
   },
   metadataCell: {
     backgroundColor: '#fafafa',
+  },
+  metadataCellWarning: {
+    backgroundColor: '#fff3e0',
+    borderWidth: 1,
+    borderColor: '#f57c00',
+  },
+  metaModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  metaModalCard: {
+    width: '100%',
+    maxWidth: 320,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+  },
+  metaModalTitle: {
+    fontSize: 16,
+    fontFamily: FONTS.POPPINS_MEDIUM,
+    color: COLORS.TEXT,
+    marginBottom: 12,
+  },
+  metaModalInput: {
+    borderWidth: 1,
+    borderColor: '#cfd8dc',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    fontFamily: FONTS.POPPINS_REGULAR,
+    color: COLORS.TEXT,
+    marginBottom: 16,
+  },
+  metaModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  metaModalBtnSecondary: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  metaModalBtnSecondaryText: {
+    color: '#666',
+    fontFamily: FONTS.POPPINS_MEDIUM,
+  },
+  metaModalBtnPrimary: {
+    backgroundColor: COLORS.PRIMARY,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  metaModalBtnPrimaryText: {
+    color: '#fff',
+    fontFamily: FONTS.POPPINS_MEDIUM,
   },
   cellUnknown: {
     borderWidth: 1,

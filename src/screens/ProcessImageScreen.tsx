@@ -42,6 +42,14 @@ import {
   TEXTRACT_POLL_MAX_ATTEMPTS,
 } from '../utils/textractPolling';
 import ImageResizer from 'react-native-image-resizer';
+import {analyzeDocumentFromS3} from '../services/textractAnalyzeService';
+import {ocrDebugLog} from '../utils/ocrDebugLog';
+import {enhanceForOCR} from '../utils/imageEnhancement';
+import {
+  logTextractParseOutcome,
+  persistTextractResponse,
+  type TextractCaptureMeta,
+} from '../utils/textractResponseLog';
 
 type ProcessImageScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'ProcessImage'>;
@@ -53,8 +61,9 @@ const DISABLED_COLOR = '#cccccc';
 const DEFAULT_S3_REGION = 'us-west-2';
 const MAX_FETCH_RETRY = 3;
 const FETCH_RETRY_DELAY_MS = 1500;
-const MAX_UPLOAD_DIMENSION = 3200;
-const UPLOAD_JPEG_QUALITY = 92;
+const MAX_UPLOAD_DIMENSION = 2800;
+const UPLOAD_JPEG_QUALITY = 85;
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 let s3ClientCache: S3Client | null = null;
 
 const getErrorMessage = (error: unknown): string => {
@@ -201,11 +210,13 @@ type OcrDownloadResult =
   | {
       kind: 'textract';
       rawJson: string;
+      captureMeta: TextractCaptureMeta | null;
     }
   | {
       kind: 'text';
       rawJson: string;
       extractedText: string;
+      captureMeta: TextractCaptureMeta | null;
     };
 
 const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
@@ -285,7 +296,10 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
   };
 
   // Parse Textract JSON and navigate to VerifyPanelScreen
-  const processImageResult = async (jsonText: string) => {
+  const processImageResult = async (
+    jsonText: string,
+    captureMeta: TextractCaptureMeta | null = null,
+  ) => {
     try {
       if (!jsonText || jsonText.trim() === '') {
         Alert.alert('Error', 'No OCR output received. Please try again.', [
@@ -298,6 +312,28 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
         jsonText,
         manuchoice || 'CUSTOM',
       );
+
+      if (captureMeta) {
+        const phenotypeFilled = parseResult.panelData.cells.filter(cell =>
+          String(cell.phenotype ?? '').trim(),
+        ).length;
+        const donorFilled = parseResult.panelData.cells.filter(cell => {
+          const donor = String(cell.donorNumber ?? '').trim();
+          return donor.length > 0 && donor !== String(cell.cellId ?? '').trim();
+        }).length;
+
+        await logTextractParseOutcome(captureMeta, {
+          manufacturer:
+            parseResult.panelData.metadata.manufacturer || manuchoice || 'CUSTOM',
+          cellCount: parseResult.panelData.cells.length,
+          extractionAccuracy: parseResult.metrics.extractionAccuracy ?? 0,
+          overallConfidence: parseResult.overallConfidence,
+          phenotypeFilled,
+          donorFilled,
+          parseErrorCount: parseResult.parseErrors.length,
+          parseErrors: parseResult.parseErrors.slice(0, 10),
+        });
+      }
 
       if (
         parseResult.parseErrors.length > 0 &&
@@ -367,21 +403,42 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
   }
 
   async function prepareImageForUpload(localPath: string): Promise<string> {
+    const sourceUri = localPath.startsWith('file://')
+      ? localPath
+      : `file://${localPath}`;
+
+    let workingPath = localPath;
     try {
+      const enhanced = await enhanceForOCR(sourceUri);
+      workingPath = normalizeLocalFilePath(enhanced.uri);
+    } catch (error) {
+      console.warn('OCR image enhancement skipped, using original:', error);
+    }
+
+    const resizePass = async (maxDim: number, quality: number) => {
       const resized = await ImageResizer.createResizedImage(
-        localPath,
-        MAX_UPLOAD_DIMENSION,
-        MAX_UPLOAD_DIMENSION,
+        workingPath.startsWith('file://') ? workingPath : `file://${workingPath}`,
+        maxDim,
+        maxDim,
         'JPEG',
-        UPLOAD_JPEG_QUALITY,
+        quality,
         0,
         undefined,
         false,
       );
       return normalizeLocalFilePath(resized.uri);
+    };
+
+    try {
+      workingPath = await resizePass(MAX_UPLOAD_DIMENSION, UPLOAD_JPEG_QUALITY);
+      const stat = await RNFS.stat(workingPath);
+      if (stat.size > MAX_UPLOAD_BYTES) {
+        workingPath = await resizePass(2000, 75);
+      }
+      return workingPath;
     } catch (error) {
-      console.warn('Image resize skipped, using original:', error);
-      return localPath;
+      console.warn('Image resize skipped, using enhanced/original:', error);
+      return workingPath;
     }
   }
 
@@ -392,80 +449,114 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
   ): Promise<OcrDownloadResult> {
     let lastFailureMessage = 'Textract output was not ready.';
 
+    const tryDownloadKey = async (fileKey: string): Promise<OcrDownloadResult | null> => {
+      const response = await fetch(API_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({fileKey}),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        const apiError =
+          errorData?.error || errorData?.message || response.statusText;
+        lastFailureMessage = `Textract URL request failed for ${fileKey}: ${apiError}`;
+        // #region agent log
+        ocrDebugLog(
+          'ProcessImageScreen.tsx:tryDownloadKey',
+          'Textract URL API non-OK',
+          {
+            fileKey,
+            status: response.status,
+            apiError,
+            notReady: isTextractResponseNotReady(response.status, apiError),
+          },
+          'H2',
+        );
+        // #endregion
+        if (!isTextractResponseNotReady(response.status, apiError)) {
+          throw new Error(lastFailureMessage);
+        }
+        return null;
+      }
+
+      const data = await response.json();
+      const downloadUrl =
+        typeof data?.downloadUrl === 'string' ? data.downloadUrl : null;
+
+      if (!downloadUrl) {
+        lastFailureMessage = `Textract URL response for ${fileKey} did not include downloadUrl.`;
+        return null;
+      }
+
+      const fileResponse = await fetchRetry(downloadUrl);
+      if (!fileResponse.ok) {
+        lastFailureMessage = `Textract download failed for ${fileKey}: ${fileResponse.status} ${fileResponse.statusText}`;
+        return null;
+      }
+
+      const textractOutput = await fileResponse.text();
+      const parsedPayload = tryParseJson(textractOutput);
+
+      if (!parsedPayload) {
+        lastFailureMessage = `Downloaded OCR file for ${fileKey} is not valid JSON.`;
+        return null;
+      }
+
+      const captureMeta = await persistTextractResponse(textractOutput, {
+        source: hasTextractBlocks(parsedPayload) ? 'async_poll' : 'plain_text',
+        uploadedKey,
+        responseKey: fileKey,
+        manufacturer: manuchoice || 'CUSTOM',
+      });
+
+      if (hasTextractBlocks(parsedPayload) && parsedPayload.Blocks.length > 0) {
+        console.log('Textract block output ready from:', fileKey);
+        return {kind: 'textract', rawJson: textractOutput, captureMeta};
+      }
+
+      if (hasExtractedTextPayload(parsedPayload)) {
+        console.log('OCR text output ready from:', fileKey);
+        return {
+          kind: 'text',
+          rawJson: textractOutput,
+          extractedText: parsedPayload.data,
+          captureMeta,
+        };
+      }
+
+      lastFailureMessage = describeTextractPayload(parsedPayload);
+      return null;
+    };
+
     for (let attempt = 1; attempt <= TEXTRACT_POLL_MAX_ATTEMPTS; attempt += 1) {
       const keysThisRound = getTextractKeysForAttempt(fileKeys, attempt);
       onProgress?.(`Waiting for OCR… (${attempt}/${TEXTRACT_POLL_MAX_ATTEMPTS})`);
+      // #region agent log
+      ocrDebugLog(
+        'ProcessImageScreen.tsx:downloadTextractOutput',
+        'Poll round start',
+        {attempt, keysThisRound, uploadedKey},
+        'H3',
+      );
+      // #endregion
 
-      for (const fileKey of keysThisRound) {
-        try {
-          const response = await fetch(API_ENDPOINT, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({fileKey}),
-          });
-
-          if (!response.ok) {
-            const errorData = await response.json().catch(() => null);
-            const apiError =
-              errorData?.error || errorData?.message || response.statusText;
-            lastFailureMessage = `Textract URL request failed for ${fileKey}: ${apiError}`;
-            if (!isTextractResponseNotReady(response.status, apiError)) {
-              throw new Error(lastFailureMessage);
-            }
-            continue;
-          }
-
-          const data = await response.json();
-          const downloadUrl =
-            typeof data?.downloadUrl === 'string' ? data.downloadUrl : null;
-
-          if (!downloadUrl) {
-            lastFailureMessage = `Textract URL response for ${fileKey} did not include downloadUrl.`;
-            continue;
-          }
-
-          const fileResponse = await fetchRetry(downloadUrl);
-          if (!fileResponse.ok) {
-            lastFailureMessage = `Textract download failed for ${fileKey}: ${fileResponse.status} ${fileResponse.statusText}`;
-            continue;
-          }
-
-          const textractOutput = await fileResponse.text();
-          const parsedPayload = tryParseJson(textractOutput);
-
-          if (!parsedPayload) {
-            lastFailureMessage = `Downloaded OCR file for ${fileKey} is not valid JSON.`;
-            continue;
-          }
-
+      const roundResults = await Promise.allSettled(
+        keysThisRound.map(async fileKey => {
           try {
-            await RNFS.writeFile('/sdcard/Download/textract.json', textractOutput, 'utf8');
+            return await tryDownloadKey(fileKey);
           } catch (error) {
-            console.warn('Failed to persist Textract output locally:', error);
+            lastFailureMessage = `Failed to fetch Textract output for ${fileKey}: ${getErrorMessage(error)}`;
+            throw error;
           }
+        }),
+      );
 
-          if (hasTextractBlocks(parsedPayload) && parsedPayload.Blocks.length > 0) {
-            console.log('Textract block output ready from:', fileKey);
-            return {
-              kind: 'textract',
-              rawJson: textractOutput,
-            };
-          }
-
-          if (hasExtractedTextPayload(parsedPayload)) {
-            console.log('OCR text output ready from:', fileKey);
-            return {
-              kind: 'text',
-              rawJson: textractOutput,
-              extractedText: parsedPayload.data,
-            };
-          }
-
-          lastFailureMessage = describeTextractPayload(parsedPayload);
-        } catch (error) {
-          lastFailureMessage = `Failed to fetch Textract output for ${fileKey}: ${getErrorMessage(error)}`;
+      for (const roundResult of roundResults) {
+        if (roundResult.status === 'fulfilled' && roundResult.value) {
+          return roundResult.value;
         }
       }
 
@@ -474,9 +565,101 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
       }
     }
 
+    // #region agent log
+    ocrDebugLog(
+      'ProcessImageScreen.tsx:downloadTextractOutput',
+      'Poll exhausted',
+      {lastFailureMessage, fileKeys, uploadedKey, maxAttempts: TEXTRACT_POLL_MAX_ATTEMPTS},
+      'H2',
+    );
+    // #endregion
     throw new Error(
       `${lastFailureMessage} (tried: ${fileKeys.join(', ')})`,
     );
+  }
+
+  async function runDirectTextractAnalysis(
+    uploadedKey: string,
+    onProgress?: (message: string) => void,
+  ): Promise<OcrDownloadResult> {
+    const s3Config = getRequiredS3Config();
+    onProgress?.('Running OCR directly on uploaded image…');
+
+    const rawJson = await analyzeDocumentFromS3({
+      bucket: s3Config.bucket,
+      key: uploadedKey,
+      region: s3Config.region,
+      accessKeyId: s3Config.accessKey,
+      secretAccessKey: s3Config.secretKey,
+    });
+
+    const captureMeta = await persistTextractResponse(rawJson, {
+      source: 'direct_analyze',
+      uploadedKey,
+      manufacturer: manuchoice || 'CUSTOM',
+    });
+
+    console.log('Direct Textract analysis completed for:', uploadedKey);
+    return {kind: 'textract', rawJson, captureMeta};
+  }
+
+  async function fetchTextractOutput(
+    uploadedKey: string,
+    responseKeys: string[],
+    onProgress?: (message: string) => void,
+  ): Promise<OcrDownloadResult> {
+    await sleep(TEXTRACT_INITIAL_WAIT_MS);
+
+    try {
+      return await downloadTextractOutput(responseKeys, uploadedKey, onProgress);
+    } catch (pollError) {
+      console.warn(
+        'Async Textract polling failed; falling back to direct AnalyzeDocument:',
+        pollError,
+      );
+      // #region agent log
+      ocrDebugLog(
+        'ProcessImageScreen.tsx:fetchTextractOutput',
+        'Async poll failed, starting direct fallback',
+        {
+          pollError: getErrorMessage(pollError),
+          uploadedKey,
+          responseKeys,
+        },
+        'H4',
+      );
+      // #endregion
+      try {
+        const result = await runDirectTextractAnalysis(uploadedKey, onProgress);
+        // #region agent log
+        ocrDebugLog(
+          'ProcessImageScreen.tsx:fetchTextractOutput',
+          'Direct fallback succeeded',
+          {uploadedKey, jsonBytes: result.rawJson.length},
+          'H1',
+          'post-fix',
+        );
+        // #endregion
+        return result;
+      } catch (directError) {
+        // #region agent log
+        ocrDebugLog(
+          'ProcessImageScreen.tsx:fetchTextractOutput',
+          'Direct fallback failed',
+          {
+            directError: getErrorMessage(directError),
+            hasTextDecoder: typeof global.TextDecoder !== 'undefined',
+          },
+          'H1',
+        );
+        // #endregion
+        const pollMessage = getErrorMessage(pollError);
+        const directMessage = getErrorMessage(directError);
+        throw new Error(
+          `${pollMessage}\n\nDirect Textract fallback also failed: ${directMessage}`,
+        );
+      }
+    }
   }
 
   const pickSingleImage = async (): Promise<Asset | null> => {
@@ -517,6 +700,13 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
 
     try {
       const uploadPath = await prepareImageForUpload(localPath);
+      const uploadStat = await RNFS.stat(uploadPath);
+      if (uploadStat.size > MAX_UPLOAD_BYTES * 2) {
+        throw new Error(
+          `Prepared image is too large (${Math.round(uploadStat.size / 1024 / 1024)}MB). Try a closer photo.`,
+        );
+      }
+
       const base64Body = await RNFS.readFile(uploadPath, 'base64');
       await client.send(
         new PutObjectCommand({
@@ -550,19 +740,31 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
       setProcessingMessage('Uploading image…');
       uploadedKey = await uploadAssetToS3(selectedAsset);
       console.log('Image uploaded successfully to S3:', uploadedKey);
+      const s3Config = getRequiredS3Config();
+      // #region agent log
+      ocrDebugLog(
+        'ProcessImageScreen.tsx:handlePickUploadAndProcess',
+        'S3 upload complete',
+        {
+          uploadedKey,
+          bucket: s3Config.bucket,
+          region: s3Config.region,
+        },
+        'H5',
+      );
+      // #endregion
 
       const responseKeys = buildTextractResponseKeys(uploadedKey);
       console.log('Polling Textract response keys:', responseKeys);
       setProcessingMessage('Starting OCR…');
-      await sleep(TEXTRACT_INITIAL_WAIT_MS);
 
-      const output = await downloadTextractOutput(
-        responseKeys,
+      const output = await fetchTextractOutput(
         uploadedKey,
+        responseKeys,
         setProcessingMessage,
       );
       setProcessingMessage('Parsing results…');
-      await processImageResult(output.rawJson);
+      await processImageResult(output.rawJson, output.captureMeta);
     } catch (error) {
       const message = getErrorMessage(error);
       console.error('Image upload flow error:', error);
