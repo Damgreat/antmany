@@ -15,6 +15,7 @@ import {
   summarizeExtractionAccuracy,
   buildAnalysisExtractionSlots,
   buildExtractionAccuracyColumnSpecs,
+  isRowIndexDonorPlaceholder,
 } from '../utils/ocrExtractionValidation';
 import {computeOverallOcrConfidence, capOverallScoreByExtraction} from '../utils/ocrTableConfidence';
 import * as AntigenData from './AntigenData';
@@ -22,7 +23,7 @@ import * as AntigenData from './AntigenData';
 const LOW_CONFIDENCE_WARN_THRESHOLD = 52;
 export const MIN_TABLE_CONFIDENCE = 60;
 
-const DATA_ROW_RESULT_RE = /^(?:\+|0|\/|NT|MF|W\+|[1-4]\+|\+W|\+S)$/i;
+const DATA_ROW_RESULT_RE = /^(?:\+|0|\/|NT|N\/T|NT|MF|W\+|[1-4]\+|\+W|\+S)$/i;
 
 export interface CellConfidence {
   rowIndex: number;
@@ -149,12 +150,40 @@ const EVIDENCE_SCORES: Record<ColumnDescriptor['evidence'], number> = {
 
 const SPECIAL_COLUMN_ALIASES = {
   cell: ['cell', 'cellno', 'cellnumber', '#', 'no'],
-  donor: ['donor', 'donornumber', 'lot', 'unit', 'unitnumber'],
-  phenotype: ['phenotype', 'pheno', 'rhhr'],
+  donor: [
+    'donor',
+    'donornumber',
+    'lot',
+    'unit',
+    'unitnumber',
+    'spender',
+    'donneur',
+    'donateur',
+    'donator',
+    'donatore',
+    'donante',
+    'dona',
+    'donadora',
+    'spendeur',
+  ],
+  phenotype: [
+    'phenotype',
+    'pheno',
+    'spezifitat',
+    'specificity',
+    'spec',
+  ],
   result: ['result', 'results', 'test', 'testresult', 'testresults', 'is', 'rxn'],
 };
 
 const EXTRA_GROUP_ALIASES: Record<string, string[]> = {
+  'Rh-hr': ['rhhrantigens'],
+  DUFFY: ['duffyshaded', 'duffy'],
+  KIDD: ['kidd'],
+  LEWIS: ['lewise', 'laws'],
+  LUTHERAN: ['luth', 'lutheran'],
+  MNS: ['mnss', 'mnsshaded'],
+  SEX: ['sexlinked', 'sexlinkedantigens', 'xg'],
   'Additional Antigens': [
     'additonalantigens',
     'additionalantigen',
@@ -197,7 +226,15 @@ function normalizeExactKey(raw: string): string {
 }
 
 function splitHeaderTokens(raw: string): string[] {
-  const normalized = raw.normalize('NFKD').replace(/[^\w\s]+/g, ' ');
+  const superscriptSafe = raw.replace(
+    /([A-Za-z]{1,3})\s*\^\s*([A-Za-z0-9]{1,2})\b/g,
+    '$1^$2',
+  );
+  const normalized = superscriptSafe
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w\s^]+/g, ' ')
+    .replace(/\^/g, '');
   return normalized
     .split(/\s+/)
     .map(token => token.trim())
@@ -212,6 +249,22 @@ function normaliseResultValue(raw: string): {value: ResultValue; exact: boolean}
 
   if (cleaned in RESULT_MAP) {
     return {value: RESULT_MAP[cleaned], exact: true};
+  }
+
+  if (cleaned === 'NT' || cleaned === 'N/T' || cleaned === 'NOTTESTED') {
+    return {value: 'NT', exact: true};
+  }
+
+  if (cleaned === '(+)' || cleaned === '(++)') {
+    return {value: '+w', exact: true};
+  }
+
+  const gradeMatch = cleaned.match(/^([1-4])\+(?:FP)?$/);
+  if (gradeMatch) {
+    const grade = cleaned.includes('FP')
+      ? ('4+fp' as ResultValue)
+      : (`${gradeMatch[1]}+` as ResultValue);
+    return {value: grade, exact: true};
   }
 
   if (/^[1-4][+]?$/.test(cleaned)) {
@@ -233,6 +286,19 @@ function isBlankLikeNoise(raw: string): boolean {
   }
 
   return /^[.,:;'"`’‘~_¦]+$/.test(compact);
+}
+
+function isPanelFooterRow(
+  row: Array<{text: string; confidence: number}>,
+): boolean {
+  const joined = row
+    .map(cell => cell?.text ?? '')
+    .join(' ')
+    .toLowerCase();
+
+  return /mode\s*of|reactivity|patient\s*cells?|additional\s*cells|antiglobulin|37\s*°?c|variable|^cold$|^var\.|shaded columns|not tested|represent\s*not/i.test(
+    joined,
+  );
 }
 
 function retryNormaliseResultValue(raw: string): {
@@ -268,6 +334,13 @@ function retryNormaliseResultValue(raw: string): {
   }
 
   if (compact.includes('+')) {
+    const gradeMatch = compact.match(/^([1-4])\+(?:FP)?$/);
+    if (gradeMatch) {
+      const grade = compact.includes('FP')
+        ? ('4+fp' as ResultValue)
+        : (`${gradeMatch[1]}+` as ResultValue);
+      return {value: grade, exact: true, recovered: true, blankLike: false};
+    }
     if (compact.includes('W')) {
       return {value: '+w', exact: true, recovered: true, blankLike: false};
     }
@@ -279,6 +352,10 @@ function retryNormaliseResultValue(raw: string): {
 
   if (compact === 'NT' || compact === 'N/T' || compact === 'NOTTESTED') {
     return {value: 'NT', exact: true, recovered: true, blankLike: false};
+  }
+
+  if (/^N\d+$/.test(compact)) {
+    return {value: '?', exact: false, recovered: false, blankLike: false};
   }
 
   if (compact === '0' || /^[OQD]$/.test(compact) || compact === '00' || compact === 'OO') {
@@ -477,12 +554,21 @@ function buildAntigenLookup(
   return lookup;
 }
 
-function buildGroupLookup(groups: AntigenGroups): Map<string, string> {
+function buildGroupLookup(
+  groups: AntigenGroups,
+  schemaGroups: Array<{group: string; aliases?: string[]}> = [],
+): Map<string, string> {
   const lookup = new Map<string, string>();
   for (const groupName of Object.keys(groups)) {
     lookup.set(normalizeInsensitiveKey(groupName), groupName);
     for (const alias of EXTRA_GROUP_ALIASES[groupName] ?? []) {
       lookup.set(normalizeInsensitiveKey(alias), groupName);
+    }
+  }
+  for (const schemaGroup of schemaGroups) {
+    lookup.set(normalizeInsensitiveKey(schemaGroup.group), schemaGroup.group);
+    for (const alias of schemaGroup.aliases ?? []) {
+      lookup.set(normalizeInsensitiveKey(alias), schemaGroup.group);
     }
   }
   return lookup;
@@ -496,6 +582,39 @@ function buildAntigenToGroupMap(groups: AntigenGroups): Map<string, string> {
     }
   }
   return map;
+}
+
+function antigenBelongsToGroup(
+  antigen: string,
+  groupName: string,
+  antigenToGroupMap: Map<string, string>,
+  antigenGroups: AntigenGroups,
+): boolean {
+  const ownerGroup = antigenToGroupMap.get(antigen);
+  if (ownerGroup) {
+    return ownerGroup === groupName;
+  }
+  return (antigenGroups[groupName] ?? []).includes(antigen);
+}
+
+function reconcileDescriptorGroups(
+  descriptors: ColumnDescriptor[],
+  groupSpans: GroupSpan[],
+  antigenToGroupMap: Map<string, string>,
+): void {
+  for (const descriptor of descriptors) {
+    const ownerGroup =
+      descriptor.expectedGroup || antigenToGroupMap.get(descriptor.antigen) || '';
+    if (!ownerGroup) {
+      continue;
+    }
+
+    const columnSpan = getGroupSpanForColumn(groupSpans, descriptor.sourceColumn);
+    if (columnSpan?.group === ownerGroup) {
+      descriptor.detectedGroup = ownerGroup;
+      descriptor.expectedGroup = ownerGroup;
+    }
+  }
 }
 
 function findHeaderRow(
@@ -989,21 +1108,38 @@ function resolveCompactSequenceAntigen(
   return best.antigens[indexInCell] ?? null;
 }
 
-function classifySpecialColumn(headerPath: string[]): keyof SpecialColumns | undefined {
-  const labels = headerPath
-    .map(label => normalizeInsensitiveKey(label))
-    .filter(Boolean);
+function expandHeaderLabelKeys(label: string): string[] {
+  const keys = [
+    normalizeInsensitiveKey(label),
+    normalizeInsensitiveKey(sanitizeOcrHeaderLabel(label)),
+  ].filter(Boolean);
+  for (const token of splitHeaderTokens(label)) {
+    keys.push(normalizeInsensitiveKey(token));
+  }
+  return Array.from(new Set(keys));
+}
 
-  if (labels.some(label => SPECIAL_COLUMN_ALIASES.result.includes(label))) {
+function headerPathMatchesAliases(headerPath: string[], aliases: string[]): boolean {
+  return headerPath.some(label =>
+    expandHeaderLabelKeys(label).some(key => aliases.includes(key)),
+  );
+}
+
+function labelMatchesAliases(label: string, aliases: string[]): boolean {
+  return expandHeaderLabelKeys(label).some(key => aliases.includes(key));
+}
+
+function classifySpecialColumn(headerPath: string[]): keyof SpecialColumns | undefined {
+  if (headerPathMatchesAliases(headerPath, SPECIAL_COLUMN_ALIASES.result)) {
     return 'resultCol';
   }
-  if (labels.some(label => SPECIAL_COLUMN_ALIASES.cell.includes(label))) {
+  if (headerPathMatchesAliases(headerPath, SPECIAL_COLUMN_ALIASES.cell)) {
     return 'cellNumberCol';
   }
-  if (labels.some(label => SPECIAL_COLUMN_ALIASES.donor.includes(label))) {
+  if (headerPathMatchesAliases(headerPath, SPECIAL_COLUMN_ALIASES.donor)) {
     return 'donorNumberCol';
   }
-  if (labels.some(label => SPECIAL_COLUMN_ALIASES.phenotype.includes(label))) {
+  if (headerPathMatchesAliases(headerPath, SPECIAL_COLUMN_ALIASES.phenotype)) {
     return 'phenotypeCol';
   }
 
@@ -1025,8 +1161,9 @@ function getColumnSpecificHeaderLabel(cell: RawTableCell, colIndex: number): str
   }
 
   const tokens = splitHeaderTokens(cell.text);
-  if (tokens.length === cell.colSpan) {
-    return tokens[colIndex - cell.col] ?? '';
+  const tokenIndex = colIndex - cell.col;
+  if (tokenIndex >= 0 && tokenIndex < tokens.length) {
+    return tokens[tokenIndex];
   }
 
   return cell.text.trim();
@@ -1040,37 +1177,116 @@ function classifySpecialColumnFromDeepestHeader(
 ): keyof SpecialColumns | undefined {
   const deepestCells = getDeepestHeaderCells(coveringCells);
   for (const cell of deepestCells) {
-    if (resolvePerColumnToken(cell, colIndex, antigenLookup)) {
-      continue;
-    }
-
     const label = getColumnSpecificHeaderLabel(cell, colIndex);
     if (!label) {
       continue;
     }
 
     const normalized = normalizeInsensitiveKey(label);
-    if (cell.colSpan !== 1) {
-      continue;
-    }
-    if (SPECIAL_COLUMN_ALIASES.result.includes(normalized)) {
+    const antigenMatch = resolveAntigenValue(label, antigenLookup);
+
+    if (labelMatchesAliases(label, SPECIAL_COLUMN_ALIASES.result)) {
       return 'resultCol';
     }
-    if (SPECIAL_COLUMN_ALIASES.cell.includes(normalized)) {
+    if (labelMatchesAliases(label, SPECIAL_COLUMN_ALIASES.cell)) {
       return 'cellNumberCol';
     }
-    if (SPECIAL_COLUMN_ALIASES.donor.includes(normalized)) {
+    if (labelMatchesAliases(label, SPECIAL_COLUMN_ALIASES.donor)) {
       return 'donorNumberCol';
     }
-    if (
-      SPECIAL_COLUMN_ALIASES.phenotype.includes(normalized) &&
-      !resolveAntigenValue(label, antigenLookup)
-    ) {
+    const isPhenotypeLabel =
+      SPECIAL_COLUMN_ALIASES.phenotype.includes(normalized) ||
+      (normalized === 'rhhr' && cell.colSpan === 1);
+    if (isPhenotypeLabel && !antigenMatch) {
       return 'phenotypeCol';
+    }
+
+    if (antigenMatch) {
+      continue;
     }
   }
 
   return undefined;
+}
+
+function isRhDonorCodeLikeCellText(raw: string): boolean {
+  const compact = raw.trim().replace(/\s+/g, '');
+  if (!compact || compact.length > 8) {
+    return false;
+  }
+  if (/^\d+$/.test(compact)) {
+    return false;
+  }
+  return (
+    /^R[0-9r''wWR]{1,6}$/i.test(compact) ||
+    /^r['']r$/i.test(compact) ||
+    /^r['']{2}r$/i.test(compact) ||
+    /^rr$/i.test(compact)
+  );
+}
+
+function scorePhenotypeColumnPattern(
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  col: number,
+  maxRows = 11,
+): number {
+  let score = 0;
+  const lastRow = Math.min(grid.length - 1, dataStartRow + maxRows - 1);
+  for (let row = dataStartRow; row <= lastRow; row++) {
+    const text = grid[row]?.[col]?.text?.trim() ?? '';
+    if (isRhDonorCodeLikeCellText(text)) {
+      score -= 3;
+      continue;
+    }
+    if (isDonorLikeCellText(text)) {
+      score -= 2;
+      continue;
+    }
+    if (isPhenotypeLikeCellText(text)) {
+      score += 1;
+      if (/[.*]/.test(text)) {
+        score += 3;
+      }
+    }
+  }
+  return score;
+}
+
+function scoreDonorNumberColumnPattern(
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  col: number,
+  cellNumberCol = -1,
+  maxRows = 11,
+): number {
+  let score = 0;
+  const lastRow = Math.min(grid.length - 1, dataStartRow + maxRows - 1);
+  for (let row = dataStartRow; row <= lastRow; row++) {
+    const text = grid[row]?.[col]?.text?.trim() ?? '';
+    const cellId =
+      cellNumberCol > 0 ? grid[row]?.[cellNumberCol]?.text?.trim() ?? '' : '';
+    if (isRowIndexDonorPlaceholder(text, cellId)) {
+      score -= 4;
+      continue;
+    }
+    if (isRhDonorCodeLikeCellText(text)) {
+      score -= 3;
+      continue;
+    }
+    if (isDonorLikeCellText(text)) {
+      score += 1;
+      if (/^\d{5,}$/.test(text.replace(/\s+/g, ''))) {
+        score += 3;
+      }
+    }
+  }
+  return score;
+}
+
+function minimumSpecialColumnScore(grid: Array<Array<{text: string}>>, dataStartRow: number): number {
+  const dataRows = Math.max(0, grid.length - dataStartRow);
+  return Math.min(3, Math.max(2, Math.floor(dataRows * 0.5)));
 }
 
 function isPhenotypeLikeCellText(raw: string): boolean {
@@ -1089,7 +1305,10 @@ function isPhenotypeLikeCellText(raw: string): boolean {
     /^[Rr][0-9r''wR]*$/i.test(compact) ||
     /^rr$/i.test(compact) ||
     /^r['']r$/i.test(compact) ||
-    /^r['']{2}r$/i.test(compact)
+    /^r['']{2}r$/i.test(compact) ||
+    (/^[A-Za-z.*+\-\s]{3,20}$/.test(compact) &&
+      /[CEceDdf]/i.test(compact) &&
+      !/^\d+$/.test(compact))
   );
 }
 
@@ -1123,7 +1342,8 @@ function inferMissingSpecialColumns(
     return;
   }
 
-  const searchEnd = Math.min(rhSpan.startCol + 4, rhSpan.endCol);
+  const searchEnd = Math.min(rhSpan.startCol + 6, rhSpan.endCol);
+  const minScore = minimumSpecialColumnScore(grid, dataStartRow);
   const reservedCols = new Set(
     [specialColumns.phenotypeCol, specialColumns.donorNumberCol, specialColumns.cellNumberCol].filter(
       col => col > 0,
@@ -1137,15 +1357,40 @@ function inferMissingSpecialColumns(
       if (reservedCols.has(col)) {
         continue;
       }
-      const score = scoreColumnDataPattern(grid, dataStartRow, col, isPhenotypeLikeCellText);
+      const score = scorePhenotypeColumnPattern(grid, dataStartRow, col);
       if (score > bestScore) {
         bestScore = score;
         bestCol = col;
       }
     }
-    if (bestCol > 0 && bestScore >= 3) {
+    if (bestCol > 0 && bestScore >= minScore) {
       specialColumns.phenotypeCol = bestCol;
       reservedCols.add(bestCol);
+    }
+  } else {
+    const phenotypeScore = scorePhenotypeColumnPattern(
+      grid,
+      dataStartRow,
+      specialColumns.phenotypeCol,
+    );
+    if (phenotypeScore < minScore) {
+      let bestCol = -1;
+      let bestScore = 0;
+      for (let col = rhSpan.startCol; col <= searchEnd; col++) {
+        if (reservedCols.has(col) || col === specialColumns.phenotypeCol) {
+          continue;
+        }
+        const score = scorePhenotypeColumnPattern(grid, dataStartRow, col);
+        if (score > bestScore) {
+          bestScore = score;
+          bestCol = col;
+        }
+      }
+      if (bestCol > 0 && bestScore >= minScore && bestScore > phenotypeScore) {
+        reservedCols.delete(specialColumns.phenotypeCol);
+        specialColumns.phenotypeCol = bestCol;
+        reservedCols.add(bestCol);
+      }
     }
   }
 
@@ -1156,13 +1401,47 @@ function inferMissingSpecialColumns(
       if (reservedCols.has(col)) {
         continue;
       }
-      const score = scoreColumnDataPattern(grid, dataStartRow, col, isDonorLikeCellText);
+      const score = scoreDonorNumberColumnPattern(
+        grid,
+        dataStartRow,
+        col,
+        specialColumns.cellNumberCol,
+      );
       if (score > bestScore) {
         bestScore = score;
         bestCol = col;
       }
     }
-    if (bestCol > 0 && bestScore >= 3) {
+    if (bestCol > 0 && bestScore >= minScore) {
+      specialColumns.donorNumberCol = bestCol;
+      reservedCols.add(bestCol);
+    }
+  } else {
+    const donorScore = scoreDonorNumberColumnPattern(
+      grid,
+      dataStartRow,
+      specialColumns.donorNumberCol,
+      specialColumns.cellNumberCol,
+    );
+    let bestCol = specialColumns.donorNumberCol;
+    let bestScore = donorScore;
+    for (let col = rhSpan.startCol; col <= searchEnd; col++) {
+      if (reservedCols.has(col) || col === specialColumns.phenotypeCol) {
+        continue;
+      }
+      const score = scoreDonorNumberColumnPattern(
+        grid,
+        dataStartRow,
+        col,
+        specialColumns.cellNumberCol,
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        bestCol = col;
+      }
+    }
+    if (bestCol > 0 && bestScore >= minScore && bestCol !== specialColumns.donorNumberCol) {
+      reservedCols.delete(specialColumns.donorNumberCol);
       specialColumns.donorNumberCol = bestCol;
       reservedCols.add(bestCol);
     }
@@ -1238,6 +1517,25 @@ function buildColumnDescriptor(
   const headerPath = buildHeaderPathForColumn(table, headerRows, colIndex);
   const groupSpan = getGroupSpanForColumn(groupSpans, colIndex);
   const detectedGroup = groupSpan?.group || resolveDetectedGroup(headerPath, groupLookup);
+  const spanGroup = groupSpan?.group || detectedGroup;
+
+  const toDescriptorIfGroupMatches = (
+    antigen: string,
+    evidence: ColumnDescriptor['evidence'],
+  ): ColumnDescriptor | null => {
+    if (spanGroup && !antigenBelongsToGroup(antigen, spanGroup, antigenToGroupMap, antigenGroups)) {
+      return null;
+    }
+    return toColumnDescriptor(
+      colIndex,
+      antigen,
+      spanGroup || detectedGroup,
+      headerPath,
+      evidence,
+      schemaColumnMap,
+      antigenToGroupMap,
+    );
+  };
 
   const candidatePieces: string[] = [];
   let positionalFallback: string | null = null;
@@ -1245,18 +1543,10 @@ function buildColumnDescriptor(
   for (const cell of coveringCells) {
     const perColumnToken = resolvePerColumnToken(cell, colIndex, antigenLookup);
     if (perColumnToken) {
-      return {
-        descriptor: toColumnDescriptor(
-          colIndex,
-          perColumnToken,
-          detectedGroup,
-          headerPath,
-          'exact',
-          schemaColumnMap,
-          antigenToGroupMap,
-        ),
-        headerPath,
-      };
+      const descriptor = toDescriptorIfGroupMatches(perColumnToken, 'exact');
+      if (descriptor) {
+        return {descriptor, headerPath};
+      }
     }
 
     if (!positionalFallback) {
@@ -1291,18 +1581,10 @@ function buildColumnDescriptor(
         antigenLookup,
       ) ?? resolveAntigenValue(sanitizedPiece, antigenLookup);
     if (resolved) {
-      return {
-        descriptor: toColumnDescriptor(
-          colIndex,
-          resolved,
-          detectedGroup,
-          headerPath,
-          'exact',
-          schemaColumnMap,
-          antigenToGroupMap,
-        ),
-        headerPath,
-      };
+      const descriptor = toDescriptorIfGroupMatches(resolved, 'exact');
+      if (descriptor) {
+        return {descriptor, headerPath};
+      }
     }
   }
 
@@ -1314,18 +1596,10 @@ function buildColumnDescriptor(
         antigenLookup,
       );
       if (combined) {
-        return {
-          descriptor: toColumnDescriptor(
-            colIndex,
-            combined,
-            detectedGroup,
-            headerPath,
-            'combined',
-            schemaColumnMap,
-            antigenToGroupMap,
-          ),
-          headerPath,
-        };
+        const descriptor = toDescriptorIfGroupMatches(combined, 'combined');
+        if (descriptor) {
+          return {descriptor, headerPath};
+        }
       }
     }
   }
@@ -1340,33 +1614,17 @@ function buildColumnDescriptor(
   }
 
   if (positionalFallback) {
-    return {
-      descriptor: toColumnDescriptor(
-        colIndex,
-        positionalFallback,
-        detectedGroup,
-        headerPath,
-        'group_span',
-        schemaColumnMap,
-        antigenToGroupMap,
-      ),
-      headerPath,
-    };
+    const descriptor = toDescriptorIfGroupMatches(positionalFallback, 'group_span');
+    if (descriptor) {
+      return {descriptor, headerPath};
+    }
   }
 
   if (compactFallback) {
-    return {
-      descriptor: toColumnDescriptor(
-        colIndex,
-        compactFallback,
-        detectedGroup,
-        headerPath,
-        'compact',
-        schemaColumnMap,
-        antigenToGroupMap,
-      ),
-      headerPath,
-    };
+    const descriptor = toDescriptorIfGroupMatches(compactFallback, 'compact');
+    if (descriptor) {
+      return {descriptor, headerPath};
+    }
   }
 
   const specialColumn = classifySpecialColumn(headerPath);
@@ -1562,7 +1820,8 @@ function computeMetadataSkipOffset(
       }
       if (
         columnHasDataSignal(grid, dataStartRow, col) &&
-        countResultLikeCellsInRange(grid, dataStartRow, col, col, 10) === 0
+        countResultLikeCellsInRange(grid, dataStartRow, col, col, 10) === 0 &&
+        columnPredominantlyMatches(grid, dataStartRow, col, isRhDonorCodeLikeCellText)
       ) {
         if (col > lastMetadataCol) {
           lastMetadataCol = col;
@@ -1572,6 +1831,29 @@ function computeMetadataSkipOffset(
   }
 
   return lastMetadataCol >= span.startCol ? lastMetadataCol - span.startCol + 1 : 0;
+}
+
+function columnPredominantlyMatches(
+  grid: Array<Array<{text: string}>>,
+  dataStartRow: number,
+  col: number,
+  matcher: (text: string) => boolean,
+  maxRows = 10,
+): boolean {
+  let hits = 0;
+  let nonEmpty = 0;
+  const lastRow = Math.min(grid.length - 1, dataStartRow + maxRows - 1);
+  for (let row = dataStartRow; row <= lastRow; row++) {
+    const text = grid[row]?.[col]?.text?.trim() ?? '';
+    if (!text) {
+      continue;
+    }
+    nonEmpty++;
+    if (matcher(text)) {
+      hits++;
+    }
+  }
+  return nonEmpty > 0 && hits >= Math.max(2, Math.ceil(nonEmpty * 0.5));
 }
 
 function computeGroupSpanAntigenOffset(
@@ -1685,15 +1967,24 @@ function mergeDetectedColumnsIntoHeaderMaps(
   columnDescriptors: ColumnDescriptor[],
   spanByGroup: Map<string, GroupSpan>,
   specialColumns: SpecialColumns,
+  antigenToGroupMap: Map<string, string>,
 ): void {
   for (const descriptor of columnDescriptors) {
-    const groupName = descriptor.expectedGroup || descriptor.detectedGroup;
+    const ownerGroup = antigenToGroupMap.get(descriptor.antigen);
+    const groupName = ownerGroup || descriptor.expectedGroup || descriptor.detectedGroup;
     const span = spanByGroup.get(groupName);
     if (
       !span ||
       descriptor.sourceColumn < span.startCol ||
       descriptor.sourceColumn > span.endCol ||
       isMetadataSourceColumn(descriptor.sourceColumn, specialColumns)
+    ) {
+      continue;
+    }
+
+    if (
+      ownerGroup &&
+      groupName !== ownerGroup
     ) {
       continue;
     }
@@ -1737,7 +2028,7 @@ function buildHeaderAntigenColumnMapInSpan(
     let mappedFromToken = false;
     for (const cell of coveringCells) {
       const tokenAntigen = resolvePerColumnToken(cell, col, antigenLookup);
-      if (tokenAntigen) {
+      if (tokenAntigen && expectedAntigens.includes(tokenAntigen)) {
         map.set(tokenAntigen, col);
         mappedFromToken = true;
         break;
@@ -1759,7 +2050,7 @@ function buildHeaderAntigenColumnMapInSpan(
           specialColumns,
           antigenLookup,
         ) ?? resolveAntigenValue(sanitizedLabel, antigenLookup);
-      if (antigen) {
+      if (antigen && expectedAntigens.includes(antigen)) {
         map.set(antigen, col);
         break;
       }
@@ -1889,7 +2180,7 @@ function isDonorLikeCellText(raw: string): boolean {
   if (isPhenotypeLikeCellText(compact)) {
     return false;
   }
-  if (compact.length >= 7 && /^\d+$/.test(compact)) {
+  if (compact.length >= 6 && /^\d+$/.test(compact)) {
     return true;
   }
   return (
@@ -1912,17 +2203,43 @@ type ResolveCellOptions = {
   antigen?: string;
 };
 
+function recombineSplitReactionGrade(raw: string): string {
+  const trimmed = raw.trim();
+  const compact = trimmed.replace(/\s+/g, '').toLowerCase();
+  if (/^[1-4]\+(?:fp)?$/.test(compact)) {
+    return compact;
+  }
+
+  const tokens = splitResultTokens(trimmed);
+  if (tokens.length >= 2 && /^[1-4]$/.test(tokens[0]) && tokens[1] === '+') {
+    return tokens[2]?.toLowerCase() === 'fp' ? `${tokens[0]}+fp` : `${tokens[0]}+`;
+  }
+
+  return trimmed;
+}
+
 function resolveCellValueFromRow(
   row: Array<{text: string; confidence: number}>,
   sourceColumn: number,
   options?: ResolveCellOptions,
 ): {text: string; confidence: number} {
   const cell = row[sourceColumn] ?? {text: '', confidence: 100};
-  const trimmed = cell.text.trim();
+  const trimmed = recombineSplitReactionGrade(cell.text);
+  const compact = trimmed.replace(/\s+/g, '');
+
+  if (compact && /^[1-4]\+(?:fp)?$/i.test(compact)) {
+    return {text: compact, confidence: cell.confidence};
+  }
 
   if (trimmed) {
     const tokens = splitResultTokens(trimmed);
-    if (tokens.length > 1 && options?.groupAntigens && options.antigen) {
+    const supplementalKeys = new Set(['Native', 'Enzym', '37C', 'Remarks', 'result']);
+    if (
+      tokens.length > 1 &&
+      options?.groupAntigens &&
+      options.antigen &&
+      !supplementalKeys.has(options.antigen)
+    ) {
       const targetIndex = options.groupAntigens.indexOf(options.antigen);
       if (targetIndex >= 0 && targetIndex < tokens.length) {
         const token = tokens[targetIndex];
@@ -1934,7 +2251,7 @@ function resolveCellValueFromRow(
 
     const resolved = resolveCellResultValue(trimmed);
     if (resolved.blankLike || resolved.value !== '') {
-      return cell;
+      return {text: trimmed, confidence: cell.confidence};
     }
   }
 
@@ -1951,6 +2268,7 @@ function buildGroupMappingContext(
   grid: Array<Array<{text: string; confidence: number}>>,
   dataStartRow: number,
   specialColumns: SpecialColumns,
+  antigenToGroupMap: Map<string, string>,
 ): {
   spanByGroup: Map<string, GroupSpan>;
   groupAssignments: Map<string, Map<string, number>>;
@@ -1984,6 +2302,7 @@ function buildGroupMappingContext(
     columnDescriptors,
     spanByGroup,
     specialColumns,
+    antigenToGroupMap,
   );
 
   const groupAssignments = new Map<string, Map<string, number>>();
@@ -2080,6 +2399,7 @@ function buildDescriptorsFromSchemaAndSpans(
     columnDescriptors,
     spanByGroup,
     specialColumns,
+    antigenToGroupMap,
   );
 
   const groupAssignments = new Map<string, Map<string, number>>();
@@ -2125,6 +2445,7 @@ function buildDescriptorsFromSchemaAndSpans(
           kind: schemaColumn.kind,
           required: schemaColumn.required,
           expectedGroup: schemaColumn.group,
+          detectedGroup: schemaColumn.group,
         });
       }
       continue;
@@ -2182,15 +2503,20 @@ function mergeDetectedIntoProjection(
 
   return projected.map(projectedDescriptor => {
     const match = detectedByAntigen.get(projectedDescriptor.antigen);
+    const groupsAlign =
+      !match?.detectedGroup ||
+      !projectedDescriptor.expectedGroup ||
+      match.detectedGroup === projectedDescriptor.expectedGroup;
     if (
       match &&
+      groupsAlign &&
       EVIDENCE_SCORES[match.evidence] >= EVIDENCE_SCORES.compact
     ) {
       return {
         ...projectedDescriptor,
         sourceColumn: match.sourceColumn,
         headerPath: match.headerPath.length > 0 ? match.headerPath : projectedDescriptor.headerPath,
-        detectedGroup: match.detectedGroup || projectedDescriptor.detectedGroup,
+        detectedGroup: projectedDescriptor.expectedGroup || projectedDescriptor.detectedGroup,
         evidence: match.evidence,
       };
     }
@@ -2430,7 +2756,11 @@ function shouldIgnoreUnmappedHeader(
     ) {
       return true;
     }
-    return ['fy', 'le', 'lu', 'jk', 'kp', 'js'].includes(normalized);
+    return ['fy', 'le', 'lu', 'jk', 'kp', 'js', 'nativ', 'native', 'enzym', 'enzyme', 'easym', 'eazym', 'petc', 'bemerkungen', 'remarks', 'remarques', 'observaciones', '37c', 'immediate', 'directo', 'epeym', 'testresults', 'scianna', 'dombrock', 'colton', 'landsteiner', 'knops', 'chido', 'rodgers', 'waarnemingen', 'osservazioni'].includes(normalized) ||
+      normalized.includes('scianna') ||
+      normalized.includes('dombrock') ||
+      normalized.includes('landsteiner') ||
+      normalized.includes('knops');
   });
 }
 
@@ -2475,7 +2805,10 @@ export class PanelTableParser {
       .filter(column => column.kind === 'analysis')
       .map(column => column.key);
     this.antigenLookup = buildAntigenLookup(this.schemaColumns);
-    this.groupLookup = buildGroupLookup(this.antigenGroups);
+    this.groupLookup = buildGroupLookup(
+      this.antigenGroups,
+      AntigenData.getOcrRenderSchema(manufacturer),
+    );
     this.antigenToGroupMap = buildAntigenToGroupMap(this.antigenGroups);
   }
 
@@ -2629,9 +2962,13 @@ export class PanelTableParser {
                     detected.headerPath.length > 0
                       ? detected.headerPath
                       : projectedDescriptor.headerPath,
+                  detectedGroup: projectedDescriptor.expectedGroup,
                   evidence: detected.evidence,
                 }
-              : projectedDescriptor,
+              : {
+                  ...projectedDescriptor,
+                  detectedGroup: projectedDescriptor.expectedGroup,
+                },
           );
           mappedAntigens.add(projectedDescriptor.antigen);
         }
@@ -2690,13 +3027,25 @@ export class PanelTableParser {
     const unexpectedColumns = uniqueValues(
       antigens.filter(antigen => !this.knownAntigens.includes(antigen)),
     );
+
+    reconcileDescriptorGroups(
+      columnDescriptors,
+      groupSpans,
+      this.antigenToGroupMap,
+    );
+
     const groupMismatches = columnDescriptors
-      .filter(
-        descriptor =>
-          descriptor.detectedGroup &&
-          descriptor.expectedGroup &&
-          descriptor.detectedGroup !== descriptor.expectedGroup,
-      )
+      .filter(descriptor => {
+        if (
+          !descriptor.detectedGroup ||
+          !descriptor.expectedGroup ||
+          descriptor.detectedGroup === descriptor.expectedGroup
+        ) {
+          return false;
+        }
+        const columnSpan = getGroupSpanForColumn(groupSpans, descriptor.sourceColumn);
+        return columnSpan?.group !== descriptor.expectedGroup;
+      })
       .map(
         descriptor =>
           `${descriptor.antigen}: expected ${descriptor.expectedGroup}, detected ${descriptor.detectedGroup}`,
@@ -2767,6 +3116,7 @@ export class PanelTableParser {
       grid,
       dataStartRow,
       specialColumns,
+      this.antigenToGroupMap,
     );
 
     const cells: CellData[] = [];
@@ -2783,6 +3133,13 @@ export class PanelTableParser {
     for (let rowIndex = dataStartRow; rowIndex <= mainTable.numRows; rowIndex++) {
       const row = grid[rowIndex];
       if (!row) {
+        continue;
+      }
+
+      if (isPanelFooterRow(row)) {
+        if (cells.length > 0) {
+          break;
+        }
         continue;
       }
 
@@ -2815,14 +3172,35 @@ export class PanelTableParser {
         specialColumns.cellNumberCol > 0
           ? row[specialColumns.cellNumberCol]?.text.trim() || inferredRowNumber
           : inferredRowNumber;
-      const donorNumber =
+      const rawDonorNumber =
         specialColumns.donorNumberCol > 0
-          ? row[specialColumns.donorNumberCol]?.text.trim() || cellId
-          : cellId;
+          ? row[specialColumns.donorNumberCol]?.text.trim() || ''
+          : '';
+      const donorNumber = rawDonorNumber || cellId;
       const phenotype =
         specialColumns.phenotypeCol > 0
           ? row[specialColumns.phenotypeCol]?.text.trim() || ''
           : '';
+
+      const analysisFilledCount = columnDescriptors.filter(
+        descriptor =>
+          descriptor.kind === 'analysis' &&
+          String(row[descriptor.sourceColumn]?.text ?? '').trim() !== '',
+      ).length;
+
+      if (
+        hasCellNumber &&
+        specialColumns.donorNumberCol > 0 &&
+        isRowIndexDonorPlaceholder(rawDonorNumber, cellId) &&
+        !phenotype.trim() &&
+        analysisFilledCount < Math.max(2, Math.floor(columnDescriptors.length * 0.08))
+      ) {
+        emptyRowStreak++;
+        if (cells.length > 0) {
+          break;
+        }
+        continue;
+      }
 
       if (specialColumns.resultCol > 0) {
         const resultCell = row[specialColumns.resultCol] ?? {text: '', confidence: 100};
@@ -2875,7 +3253,15 @@ export class PanelTableParser {
           groupAntigens,
           antigen: descriptor.antigen,
         });
-        const normalized = resolveCellResultValue(valueCell.text);
+        const compactCellValue = valueCell.text.replace(/\s+/g, '').toLowerCase();
+        const normalized = /^[1-4]\+(?:fp)?$/.test(compactCellValue)
+          ? {
+              value: compactCellValue as ResultValue,
+              exact: true,
+              recovered: false,
+              blankLike: false,
+            }
+          : resolveCellResultValue(valueCell.text);
         const isEmpty = normalized.value === '';
         const needsReview = !isEmpty && (!normalized.exact || normalized.value === '?');
         const isLowConfidence = !isEmpty && normalized.exact && valueCell.confidence < LOW_CONFIDENCE_WARN_THRESHOLD;

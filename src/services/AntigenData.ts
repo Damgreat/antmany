@@ -109,6 +109,30 @@ import {AntigenGroups} from '../types';
     "Additonal Antigens",
   ];
 
+  export const BIORAD_GROUP_ORDER = [
+    "Rh-hr",
+    "KELL",
+    "DUFFY",
+    "KIDD",
+    "LEWIS",
+    "P",
+    "MNS",
+    "LUTHERAN",
+    "SEX",
+  ];
+
+  export const BIORAD_GROUP_MEMBERS: Record<string, string[]> = {
+    "Rh-hr": ["D", "C", "E", "c", "e", "f"],
+    KELL: ["K", "k", "Kpa", "Kpb", "Jsa", "Jsb"],
+    DUFFY: ["Fya", "Fyb"],
+    KIDD: ["Jka", "Jkb"],
+    LEWIS: ["Lea", "Leb"],
+    P: ["P1"],
+    MNS: ["M", "N", "S", "s"],
+    LUTHERAN: ["Lua", "Lub"],
+    SEX: ["Xga"],
+  };
+
     export const BIORAD_GRIFOLS_GROUP_ORDER = [
     "Rh-hr",
     "KELL",
@@ -269,7 +293,7 @@ import {AntigenGroups} from '../types';
     "MEDION": MEDION_GROUP_MEMBERS,
     "GRIFOLS": BIORAD_GRIFOLS_GROUP_MEMBERS,
     "QUOTIENT": QUOTIENT_GROUP_MEMBERS,
-    "BIO-RAD": BIORAD_GRIFOLS_GROUP_MEMBERS
+    "BIO-RAD": BIORAD_GROUP_MEMBERS
   };
 
   export const MANUFACTURER_GRPORDER_MAP: Record<typeof ANTIGEN_MANUFACTURERS[number], string[]> = {
@@ -281,7 +305,7 @@ import {AntigenGroups} from '../types';
     MEDION: MEDION_GROUP_ORDER,
     GRIFOLS: BIORAD_GRIFOLS_GROUP_ORDER,
     QUOTIENT: QUOTIENT_GROUP_ORDER,
-    "BIO-RAD": BIORAD_GRIFOLS_GROUP_ORDER,
+    "BIO-RAD": BIORAD_GROUP_ORDER,
   };
 
   export interface OcrSchemaColumnDefinition {
@@ -419,16 +443,277 @@ import {AntigenGroups} from '../types';
     },
   ];
 
+  export const ORTHO_OCR_RENDER_SCHEMA: OcrSchemaGroupDefinition[] = [
+    {
+      group: 'Rh-hr',
+      aliases: ['Rh-hr', 'Rhhr'],
+      columns: ['D', 'C', 'E', 'c', 'e', 'f', 'Cw', 'V'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Cw' ? {aliases: ['C^w', 'Cw']} : {}),
+        ...(column === 'V' ? {aliases: ['*V', 'V']} : {}),
+      })),
+    },
+    {
+      group: 'KELL',
+      columns: ['K', 'k', 'Kpa', 'Kpb', 'Jsa', 'Jsb'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Kpa' ? {aliases: ['Kp^a', 'Kpa']} : {}),
+        ...(column === 'Kpb' ? {aliases: ['Kp^b', 'Kpb']} : {}),
+        ...(column === 'Jsa' ? {aliases: ['Js^a', 'Jsa']} : {}),
+        ...(column === 'Jsb' ? {aliases: ['Js^b', 'Jsb', '/']} : {}),
+      })),
+    },
+    {
+      group: 'DUFFY',
+      aliases: ['Duffy', 'Duffy (Shaded)'],
+      columns: ['Fya', 'Fyb'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Fya' ? {aliases: ['Fy^a', 'Fya', 'Fy']} : {}),
+        ...(column === 'Fyb' ? {aliases: ['Fy^b', 'Fyb']} : {}),
+      })),
+    },
+    {
+      group: 'KIDD',
+      columns: ['Jka', 'Jkb'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Jka' ? {aliases: ['Jk^a', 'Jka', 'Jk']} : {}),
+        ...(column === 'Jkb' ? {aliases: ['Jk^b', 'Jkb']} : {}),
+      })),
+    },
+    {
+      group: 'SEX',
+      aliases: ['Sex Linked', 'SexLinked', 'Xg'],
+      columns: [{
+        key: 'Xga',
+        label: 'Xga',
+        kind: 'analysis' as const,
+        required: true,
+        aliases: ['Xg^a', 'Xga', 'Xg*'],
+      }],
+    },
+    {
+      group: 'LEWIS',
+      aliases: ['Lewis', 'Laws'],
+      columns: ['Lea', 'Leb'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Lea' ? {aliases: ['Le^a', 'Lea', 'Le']} : {}),
+        ...(column === 'Leb' ? {aliases: ['Le^b', 'Leb']} : {}),
+      })),
+    },
+    {
+      group: 'MNS',
+      aliases: ['MNS', 'MNS (Shaded)'],
+      columns: ['S', 's', 'M', 'N'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+      })),
+    },
+    {
+      group: 'P',
+      columns: [{
+        key: 'P1',
+        label: 'P1',
+        kind: 'analysis' as const,
+        required: true,
+      }],
+    },
+    {
+      group: 'LUTHERAN',
+      aliases: ['Lutheran', 'Luth.'],
+      columns: ['Lua', 'Lub'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Lua' ? {aliases: ['Lu^a', 'Lua', 'Lu']} : {}),
+        ...(column === 'Lub' ? {aliases: ['Lu^b', 'Lub']} : {}),
+      })),
+    },
+    {
+      group: 'Additional Antigens',
+      aliases: ['Additonal Antigens', 'Special Antigen Typing'],
+      columns: [{
+        key: 'Special Antigen Typing',
+        label: 'Special Antigen Typing',
+        kind: 'supplemental' as const,
+        required: false,
+        aliases: ['SpecialAntigenTyping', 'HLA'],
+      }],
+    },
+  ];
+
+  export const BIORAD_OCR_RENDER_SCHEMA: OcrSchemaGroupDefinition[] = [
+    {
+      group: 'Rh-hr',
+      aliases: ['Rh-hr', 'Rhhr', 'Spezifität', 'Spezifitat'],
+      columns: ['D', 'C', 'E', 'c', 'e', 'f'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+      })),
+    },
+    {
+      group: 'KELL',
+      columns: ['K', 'k', 'Kpa', 'Kpb', 'Jsa', 'Jsb'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Kpa' ? {aliases: ['Kp^a', 'Kpa']} : {}),
+        ...(column === 'Kpb' ? {aliases: ['Kp^b', 'Kpb']} : {}),
+        ...(column === 'Jsa' ? {aliases: ['Js^a', 'Jsa']} : {}),
+        ...(column === 'Jsb' ? {aliases: ['Js^b', 'Jsb']} : {}),
+      })),
+    },
+    {
+      group: 'DUFFY',
+      aliases: ['Duffy'],
+      columns: ['Fya', 'Fyb'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Fya' ? {aliases: ['Fy^a', 'Fya', 'Fy']} : {}),
+        ...(column === 'Fyb' ? {aliases: ['Fy^b', 'Fyb']} : {}),
+      })),
+    },
+    {
+      group: 'KIDD',
+      columns: ['Jka', 'Jkb'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Jka' ? {aliases: ['Jk^a', 'Jka', 'Jk']} : {}),
+        ...(column === 'Jkb' ? {aliases: ['Jk^b', 'Jkb']} : {}),
+      })),
+    },
+    {
+      group: 'LEWIS',
+      aliases: ['Lewis', 'Laws'],
+      columns: ['Lea', 'Leb'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Lea' ? {aliases: ['Le^a', 'Lea', 'Le']} : {}),
+        ...(column === 'Leb' ? {aliases: ['Le^b', 'Leb']} : {}),
+      })),
+    },
+    {
+      group: 'P',
+      columns: [{
+        key: 'P1',
+        label: 'P1',
+        kind: 'analysis' as const,
+        required: true,
+      }],
+    },
+    {
+      group: 'MNS',
+      aliases: ['MNS'],
+      columns: ['M', 'N', 'S', 's'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+      })),
+    },
+    {
+      group: 'LUTHERAN',
+      aliases: ['Lutheran', 'Luth.', 'Luth'],
+      columns: ['Lua', 'Lub'].map(column => ({
+        key: column,
+        label: column,
+        kind: 'analysis' as const,
+        required: true,
+        ...(column === 'Lua' ? {aliases: ['Lu^a', 'Lua', 'Lu']} : {}),
+        ...(column === 'Lub' ? {aliases: ['Lu^b', 'Lub']} : {}),
+      })),
+    },
+    {
+      group: 'SEX',
+      aliases: ['Sex Linked', 'Xg'],
+      columns: [{
+        key: 'Xga',
+        label: 'Xga',
+        kind: 'analysis' as const,
+        required: true,
+        aliases: ['Xg^a', 'Xga', 'Xg*'],
+      }],
+    },
+    {
+      group: 'Test Results',
+      aliases: [
+        'Test Results',
+        'TestResults',
+        'Nativ',
+        'Native',
+        'Immediate',
+        'Directo',
+        'Enzym',
+      ],
+      columns: [
+        {
+          key: 'Native',
+          label: 'Native',
+          kind: 'supplemental' as const,
+          required: false,
+          aliases: ['Nativ', 'Native', 'Immediate', 'Directo'],
+        },
+        {
+          key: 'Enzym',
+          label: 'Enzym',
+          kind: 'supplemental' as const,
+          required: false,
+          aliases: ['Enzyme', 'Enzym', 'Easym', 'Eazym'],
+        },
+        {
+          key: '37C',
+          label: '37C',
+          kind: 'supplemental' as const,
+          required: false,
+          aliases: ['37°C', '37C', 'PETC', 'Petc'],
+        },
+        {
+          key: 'Remarks',
+          label: 'Remarks',
+          kind: 'supplemental' as const,
+          required: false,
+          aliases: ['Bemerkungen', 'Remarks', 'Remarques', 'Observaciones', 'Waarnemingen'],
+        },
+      ],
+    },
+  ];
+
   export const OCR_RENDER_SCHEMAS: Record<string, OcrSchemaGroupDefinition[]> = {
     'Create New': buildSchemaFromGroups(DEFAULT_GROUP_MEMBERS),
     ALBA: ALBA_OCR_RENDER_SCHEMA,
-    ORTHO: buildSchemaFromGroups(ORTHO_GROUP_MEMBERS),
+    ORTHO: ORTHO_OCR_RENDER_SCHEMA,
     BIOTEST: buildSchemaFromGroups(BIOTEST_GROUP_MEMBERS),
     IMMUCOR: buildSchemaFromGroups(IMMUCOR_GROUP_MEMBERS),
     MEDION: buildSchemaFromGroups(MEDION_GROUP_MEMBERS),
     GRIFOLS: buildSchemaFromGroups(BIORAD_GRIFOLS_GROUP_MEMBERS),
     QUOTIENT: buildSchemaFromGroups(QUOTIENT_GROUP_MEMBERS),
-    'BIO-RAD': buildSchemaFromGroups(BIORAD_GRIFOLS_GROUP_MEMBERS),
+    'BIO-RAD': BIORAD_OCR_RENDER_SCHEMA,
   };
 
   export const getOcrRenderSchema = (manufacturer: string): OcrSchemaGroupDefinition[] =>

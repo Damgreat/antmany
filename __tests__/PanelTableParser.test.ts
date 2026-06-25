@@ -1008,4 +1008,413 @@ describe('PanelTableParser', () => {
     expect(analysisKeys).toEqual(['D', 'E', 'c', 'e', 'f']);
     expect(analysisKeys).not.toEqual(['c', 'D', 'e', 'f', 'E']);
   });
+
+  it('maps ORTHO Panel B partial rows and skips footer rows', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 10, 'MERGED_CELL');
+    appendCell('kell-group', 1, 12, 'KELL', 1, 6, 'MERGED_CELL');
+    appendCell('duffy-group', 1, 18, 'DUFFY', 1, 2, 'MERGED_CELL');
+    appendCell('kidd-group', 1, 20, 'KIDD', 1, 2, 'MERGED_CELL');
+    appendCell('sex-group', 1, 22, 'Sex Linked');
+    appendCell('lewis-group', 1, 23, 'LEWIS', 1, 2, 'MERGED_CELL');
+    appendCell('mns-group', 1, 25, 'MNS', 1, 4, 'MERGED_CELL');
+    appendCell('p-group', 1, 29, 'P');
+    appendCell('luth-group', 1, 30, 'LUTHERAN', 1, 2, 'MERGED_CELL');
+    appendCell('special-group', 1, 32, 'Special Antigen Typing');
+    appendCell('result-group', 1, 33, 'Test Results');
+
+    appendCell('rh-sub', 2, 2, 'Phenotype Donor D C E c e f C^w V', 1, 10, 'MERGED_CELL');
+    appendCell('k-sub', 2, 12, 'K k Kp Js', 1, 6, 'MERGED_CELL');
+    appendCell('fy-sub', 2, 18, 'Fy', 1, 2, 'MERGED_CELL');
+    appendCell('jk-sub', 2, 20, 'Jk', 1, 2, 'MERGED_CELL');
+    appendCell('xg-sub', 2, 22, 'Xg*');
+    appendCell('le-sub', 2, 23, 'Le', 1, 2, 'MERGED_CELL');
+    appendCell('mns-sub', 2, 25, 'S s M N', 1, 4, 'MERGED_CELL');
+    appendCell('p1-sub', 2, 29, 'P1');
+    appendCell('lu-sub', 2, 30, 'Lu', 1, 2, 'MERGED_CELL');
+    appendCell('special-sub', 2, 32, 'HLA');
+    appendCell('is-sub', 2, 33, 'IS');
+
+    const panelRows: Array<{cell: string; values: string[]}> = [
+      {cell: '12', values: ['R1R2', 'D12', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+      {cell: '13', values: ['R1R2', 'D13', '+', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+      {cell: '14', values: ['R1R2', 'D14', '0', '+', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+      {cell: '15', values: ['R1R2', 'D15', '+', '0', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', 'HLA+', '']},
+      {cell: '16', values: ['R1R2', 'D16', '0', '0', '+', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', 'HLA+', '']},
+      {cell: '17', values: ['R1R2', 'D17', '+', '+', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', 'HLA+', '']},
+      {cell: '18', values: ['R1R2', 'D18', '0', '0', '0', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+      {cell: '19', values: ['R1R2', 'D19', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', 'HLA+', '']},
+      {cell: '20', values: ['R1R2', 'D20', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+      {cell: '21', values: ['R1R2', 'D21', '+', '0', '0', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+      {cell: '22', values: ['R1R2', 'D22', '0', '0', '+', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+    ];
+
+    panelRows.forEach((panelRow, rowOffset) => {
+      const row = 3 + rowOffset;
+      appendCell(`row${row}-cell`, row, 1, panelRow.cell);
+      panelRow.values.forEach((value, index) => {
+        appendCell(`row${row}-val-${index}`, row, 2 + index, value);
+      });
+    });
+
+    appendCell('footer-row', 14, 1, 'Mode of Reactivity 37C/Antiglobulin Variable Cold Var.', 1, 10, 'MERGED_CELL');
+    appendCell('additional-header', 15, 1, 'Additional Cells', 1, 5, 'MERGED_CELL');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-ortho-panel-b',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ORTHO');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells).toHaveLength(11);
+    expect(result.panelData.cells[0].cellId).toBe('12');
+    expect(result.panelData.cells[10].cellId).toBe('22');
+    expect(result.panelData.cells.some(cell => /mode|additional/i.test(cell.cellId))).toBe(false);
+    expect(result.panelData.cells[0].results.D).toBe('+');
+    expect(result.metrics.extractionAccuracy).toBeGreaterThanOrEqual(95);
+  });
+
+  it('maps ORTHO Panel A rows with MNS s column and real donor numbers', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 10, 'MERGED_CELL');
+    appendCell('kell-group', 1, 12, 'KELL', 1, 6, 'MERGED_CELL');
+    appendCell('duffy-group', 1, 18, 'DUFFY', 1, 2, 'MERGED_CELL');
+    appendCell('kidd-group', 1, 20, 'KIDD', 1, 2, 'MERGED_CELL');
+    appendCell('sex-group', 1, 22, 'Sex Linked');
+    appendCell('lewis-group', 1, 23, 'LEWIS', 1, 2, 'MERGED_CELL');
+    appendCell('mns-group', 1, 25, 'MNS', 1, 4, 'MERGED_CELL');
+    appendCell('p-group', 1, 29, 'P');
+    appendCell('luth-group', 1, 30, 'LUTHERAN', 1, 2, 'MERGED_CELL');
+    appendCell('special-group', 1, 32, 'Special Antigen Typing');
+    appendCell('result-group', 1, 33, 'Test Results');
+
+    appendCell('rh-sub', 2, 2, 'Phenotype Donor D C E c e f C^w V', 1, 10, 'MERGED_CELL');
+    appendCell('k-sub', 2, 12, 'K k Kp Js', 1, 6, 'MERGED_CELL');
+    appendCell('fy-sub', 2, 18, 'Fy', 1, 2, 'MERGED_CELL');
+    appendCell('jk-sub', 2, 20, 'Jk', 1, 2, 'MERGED_CELL');
+    appendCell('xg-sub', 2, 22, 'Xg*');
+    appendCell('le-sub', 2, 23, 'Le', 1, 2, 'MERGED_CELL');
+    appendCell('mns-sub', 2, 25, 'S s M N', 1, 4, 'MERGED_CELL');
+    appendCell('p1-sub', 2, 29, 'P1');
+    appendCell('lu-sub', 2, 30, 'Lu', 1, 2, 'MERGED_CELL');
+    appendCell('special-sub', 2, 32, 'HLA');
+    appendCell('is-sub', 2, 33, 'IS');
+
+    const panelRows = [
+      {cell: '1', values: ['R1W11', '332682', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+      {cell: '10', values: ['rr', '334948', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '']},
+      {cell: '11', values: ['R1R1', '334982', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '0', '+', '0', '+', '0', '+', '0', '']},
+    ];
+
+    panelRows.forEach((panelRow, rowOffset) => {
+      const row = 3 + rowOffset;
+      appendCell(`row${row}-cell`, row, 1, panelRow.cell);
+      panelRow.values.forEach((value, index) => {
+        appendCell(`row${row}-val-${index}`, row, 2 + index, value);
+      });
+    });
+
+    appendCell('phantom-row', 6, 1, '12');
+    appendCell('phantom-donor', 6, 3, '12');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-ortho-panel-a',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ORTHO');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells).toHaveLength(3);
+    expect(result.panelData.cells[0].phenotype).toBe('R1W11');
+    expect(result.panelData.cells[1].donorNumber).toBe('334948');
+    expect(result.panelData.cells[1].donorNumber).not.toBe('10');
+    expect(result.panelData.cells[2].results.S).toBe('+');
+    expect(result.panelData.cells[2].results.s).toBe('0');
+    expect(result.parseErrors.some(error => error.includes('expected MNS, detected KELL'))).toBe(false);
+    expect(result.metrics.extractionAccuracy).toBeGreaterThanOrEqual(95);
+  });
+
+  it('does not map MNS s into KELL when OCR splits Js into s', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 4, 'MERGED_CELL');
+    appendCell('kell-group', 1, 6, 'KELL', 1, 6, 'MERGED_CELL');
+    appendCell('mns-group', 1, 12, 'MNS', 1, 4, 'MERGED_CELL');
+
+    appendCell('rh-sub', 2, 2, 'Phenotype Donor D C', 1, 4, 'MERGED_CELL');
+    appendCell('k-sub', 2, 6, 'K k Kp s', 1, 6, 'MERGED_CELL');
+    appendCell('mns-sub', 2, 12, 'S s M N', 1, 4, 'MERGED_CELL');
+
+    appendCell('row1-cell', 3, 1, '1');
+    appendCell('row1-pheno', 3, 2, 'R1R1');
+    appendCell('row1-donor', 3, 3, '332682');
+    appendCell('row1-d', 3, 4, '+');
+    appendCell('row1-k', 3, 6, '0');
+    appendCell('row1-s-upper', 3, 12, '+');
+    appendCell('row1-s-lower', 3, 13, '0');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-ortho-mns-kell',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('ORTHO');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.parseErrors.some(error => error.includes('expected MNS, detected KELL'))).toBe(false);
+    expect(result.panelData.cells[0].results.s).toBe('0');
+    expect(result.panelData.cells[0].results.S).toBe('+');
+  });
+
+  it('maps BIO-RAD ID-DiaPanel rows and ignores test-result side columns', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 8, 'MERGED_CELL');
+    appendCell('kell-group', 1, 10, 'KELL', 1, 6, 'MERGED_CELL');
+    appendCell('duffy-group', 1, 16, 'DUFFY', 1, 2, 'MERGED_CELL');
+    appendCell('kidd-group', 1, 18, 'KIDD', 1, 2, 'MERGED_CELL');
+    appendCell('lewis-group', 1, 20, 'LEWIS', 1, 2, 'MERGED_CELL');
+    appendCell('p-group', 1, 22, 'P');
+    appendCell('mns-group', 1, 23, 'MNS', 1, 4, 'MERGED_CELL');
+    appendCell('luth-group', 1, 27, 'LUTHERAN', 1, 2, 'MERGED_CELL');
+    appendCell('xg-group', 1, 29, 'Xg');
+    appendCell('native-group', 1, 30, 'Nativ');
+    appendCell('enzym-group', 1, 31, 'Enzym');
+    appendCell('remarks-group', 1, 32, 'Bemerkungen');
+
+    appendCell('rh-sub', 2, 2, 'Spezifität Donor D C E c e f', 1, 8, 'MERGED_CELL');
+    appendCell('k-sub', 2, 10, 'K k Kp Js', 1, 6, 'MERGED_CELL');
+    appendCell('fy-sub', 2, 16, 'Fy', 1, 2, 'MERGED_CELL');
+    appendCell('jk-sub', 2, 18, 'Jk', 1, 2, 'MERGED_CELL');
+    appendCell('le-sub', 2, 20, 'Le', 1, 2, 'MERGED_CELL');
+    appendCell('p1-sub', 2, 22, 'P1');
+    appendCell('mns-sub', 2, 23, 'M N S s', 1, 4, 'MERGED_CELL');
+    appendCell('lu-sub', 2, 27, 'Lu', 1, 2, 'MERGED_CELL');
+    appendCell('xg-sub', 2, 29, 'Xg*');
+    appendCell('native-sub', 2, 30, 'Native');
+    appendCell('enzym-sub', 2, 31, 'Enzym');
+    appendCell('remarks-sub', 2, 32, 'Remarks');
+
+    const panelRows = [
+      {cell: '1', phenotype: 'C*CD.ee', donor: '367852', antigens: ['+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0']},
+      {cell: '2', phenotype: 'CC.D.ee', donor: '2863512', antigens: ['+', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0']},
+      {cell: '3', phenotype: 'ccd.EE', donor: '412509', antigens: ['0', '+', '+', '0', '+', '0', '+', '0', '+', '0', 'NT', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0']},
+    ];
+
+    panelRows.forEach((panelRow, rowOffset) => {
+      const row = 3 + rowOffset;
+      appendCell(`row${row}-cell`, row, 1, panelRow.cell);
+      appendCell(`row${row}-phenotype`, row, 2, panelRow.phenotype);
+      appendCell(`row${row}-donor`, row, 3, panelRow.donor);
+      panelRow.antigens.forEach((value, index) => {
+        appendCell(`row${row}-antigen-${index}`, row, 4 + index, value);
+      });
+    });
+
+    appendCell('phantom-row', 6, 1, '12');
+    appendCell('phantom-donor', 6, 3, '12');
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-biorad-diapanel',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('BIO-RAD');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells).toHaveLength(3);
+    expect(result.panelData.cells[0].phenotype).toBe('C*CD.ee');
+    expect(result.panelData.cells[0].donorNumber).toBe('367852');
+    expect(result.panelData.cells[0].results.D).toBe('+');
+    expect(result.panelData.cells[2].results.Jsa).toBe('NT');
+    expect(result.parseErrors.some(error => error.includes('Unmapped header column 30'))).toBe(false);
+    expect(result.metrics.extractionAccuracy).toBeGreaterThanOrEqual(95);
+  });
+
+  it('maps BIO-RAD multilingual stacked headers with donor code and test results', () => {
+    const blocks: Block[] = [];
+    const tableChildIds: string[] = [];
+
+    const appendCell = (
+      id: string,
+      row: number,
+      col: number,
+      text: string,
+      rowSpan = 1,
+      colSpan = 1,
+      blockType = 'CELL',
+    ) => {
+      const cellBlocks = buildCell(id, row, col, text, rowSpan, colSpan, blockType);
+      tableChildIds.push(id);
+      blocks.push(...cellBlocks);
+    };
+
+    appendCell('cell-header', 1, 1, 'Cell #');
+    appendCell('rh-group', 1, 2, 'Rh-hr', 1, 9, 'MERGED_CELL');
+    appendCell('kell-group', 1, 11, 'KELL', 1, 6, 'MERGED_CELL');
+    appendCell('duffy-group', 1, 17, 'DUFFY', 1, 2, 'MERGED_CELL');
+    appendCell('kidd-group', 1, 19, 'KIDD', 1, 2, 'MERGED_CELL');
+    appendCell('lewis-group', 1, 21, 'LEWIS', 1, 2, 'MERGED_CELL');
+    appendCell('p-group', 1, 23, 'P');
+    appendCell('mns-group', 1, 24, 'MNS', 1, 4, 'MERGED_CELL');
+    appendCell('luth-group', 1, 28, 'LUTHERAN', 1, 2, 'MERGED_CELL');
+    appendCell('xg-group', 1, 30, 'Xg');
+    appendCell('extra-group', 1, 31, 'Scianna, Dombrock', 1, 1, 'MERGED_CELL');
+    appendCell('native-group', 1, 32, 'Nativ / Native / Immediate (Directo)', 1, 3, 'MERGED_CELL');
+    appendCell('remarks-group', 1, 35, 'Bemerkungen / Remarks');
+
+    appendCell('spez-header', 2, 2, 'Spezifität');
+    appendCell('donor-header', 2, 3, 'Donor Donneur');
+    appendCell('donor-lang-header', 2, 4, 'Donatore Donante Doña');
+    appendCell('rh-antigens', 2, 5, 'D C E c e f', 1, 6, 'MERGED_CELL');
+    appendCell('k-sub', 2, 11, 'K k Kp Js', 1, 6, 'MERGED_CELL');
+    appendCell('fy-sub', 2, 17, 'Fy', 1, 2, 'MERGED_CELL');
+    appendCell('jk-sub', 2, 19, 'Jk', 1, 2, 'MERGED_CELL');
+    appendCell('le-sub', 2, 21, 'Le', 1, 2, 'MERGED_CELL');
+    appendCell('p1-sub', 2, 23, 'P1');
+    appendCell('mns-sub', 2, 24, 'M N S s', 1, 4, 'MERGED_CELL');
+    appendCell('lu-sub', 2, 28, 'Lu', 1, 2, 'MERGED_CELL');
+    appendCell('xg-sub', 2, 30, 'Xg*');
+    appendCell('native-sub', 2, 32, 'Nativ');
+    appendCell('enzym-sub', 2, 33, 'Easym');
+    appendCell('temp-sub', 2, 34, 'PETC');
+    appendCell('remarks-sub', 2, 35, 'Remarks');
+
+    const panelRows = [
+      {
+        cell: '1',
+        phenotype: 'C*CD.ee',
+        donorCode: 'R1WR',
+        donor: '367852',
+        antigens: ['+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0'].slice(0, 26),
+        native: '0',
+        enzym: '0',
+      },
+      {
+        cell: '2',
+        phenotype: 'CC.D.ee',
+        donorCode: 'R2R2',
+        donor: '2863512',
+        antigens: ['+', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0'].slice(0, 26),
+        native: '3+',
+        enzym: '4+fp',
+      },
+      {
+        cell: '3',
+        phenotype: 'ccd.EE',
+        donorCode: 'R1R1',
+        donor: '412509',
+        antigens: ['0', '+', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0', '+', '0'].slice(0, 26),
+        native: '3+',
+        enzym: '4+fp',
+      },
+    ];
+
+    panelRows.forEach((panelRow, rowOffset) => {
+      const row = 3 + rowOffset;
+      appendCell(`row${row}-cell`, row, 1, panelRow.cell);
+      appendCell(`row${row}-phenotype`, row, 2, panelRow.phenotype);
+      appendCell(`row${row}-donor-code`, row, 3, panelRow.donorCode);
+      appendCell(`row${row}-donor`, row, 4, panelRow.donor);
+      panelRow.antigens.forEach((value, index) => {
+        appendCell(`row${row}-antigen-${index}`, row, 5 + index, value);
+      });
+      appendCell(`row${row}-native`, row, 32, panelRow.native);
+      appendCell(`row${row}-enzym`, row, 33, panelRow.enzym);
+    });
+
+    blocks.unshift({
+      BlockType: 'TABLE',
+      Id: 'table-biorad-real-ocr',
+      Relationships: [{Type: 'CHILD', Ids: tableChildIds}],
+    });
+
+    const parser = new PanelTableParser('BIO-RAD');
+    const result = parser.parse(JSON.stringify({Blocks: blocks}));
+
+    expect(result.panelData.cells).toHaveLength(3);
+    expect(result.panelData.cells[0].phenotype).toBe('C*CD.ee');
+    expect(result.panelData.cells[0].donorNumber).toBe('367852');
+    expect(result.panelData.cells[0].results.D).toBe('+');
+    expect(result.panelData.cells[0].results.f).toBe('0');
+    expect(result.panelData.cells[0].results.Native).toBe('0');
+    expect(result.panelData.cells[1].results.Enzym).toBe('4+fp');
+    expect(result.panelData.cells[1].results.Native).toBe('3+');
+    expect(result.parseErrors.some(error => error.includes('Unmapped header column 4'))).toBe(false);
+    expect(result.parseErrors.some(error => error.includes('expected Rh-hr, detected KELL'))).toBe(false);
+    expect(result.metrics.extractionAccuracy).toBeGreaterThanOrEqual(95);
+  });
 });

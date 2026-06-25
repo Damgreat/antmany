@@ -218,8 +218,7 @@ export function countUnresolvedAnalysisSlots(
   return count;
 }
 
-/** Cells the user must edit: blank or unreadable (?). Excludes low-confidence-only slots. */
-function isRowIndexDonorPlaceholder(
+export function isRowIndexDonorPlaceholder(
   donor: string,
   cellId?: string,
 ): boolean {

@@ -1,4 +1,18 @@
-export type ResultValue = '+' | '0' | '/' | '+s' | '+w' | 'NT' | '' | '?' | null;
+export type ResultValue =
+  | '+'
+  | '0'
+  | '/'
+  | '+s'
+  | '+w'
+  | 'NT'
+  | ''
+  | '?'
+  | '1+'
+  | '2+'
+  | '3+'
+  | '4+'
+  | '4+fp'
+  | null;
 
 export type PanelType = 'Panel A' | 'Panel B' | 'Panel C' | 'Surgiscreen';
 

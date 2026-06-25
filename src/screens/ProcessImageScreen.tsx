@@ -42,9 +42,8 @@ import {
   TEXTRACT_POLL_MAX_ATTEMPTS,
 } from '../utils/textractPolling';
 import ImageResizer from 'react-native-image-resizer';
-import {analyzeDocumentFromS3} from '../services/textractAnalyzeService';
+import {analyzeDocumentFromS3, isRetriableTextractError} from '../services/textractAnalyzeService';
 import {ocrDebugLog} from '../utils/ocrDebugLog';
-import {enhanceForOCR} from '../utils/imageEnhancement';
 import {
   logTextractParseOutcome,
   persistTextractResponse,
@@ -62,7 +61,8 @@ const DEFAULT_S3_REGION = 'us-west-2';
 const MAX_FETCH_RETRY = 3;
 const FETCH_RETRY_DELAY_MS = 1500;
 const MAX_UPLOAD_DIMENSION = 2800;
-const UPLOAD_JPEG_QUALITY = 85;
+const UPLOAD_JPEG_QUALITY = 92;
+const DIRECT_TEXTRACT_ATTEMPTS = 3;
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 let s3ClientCache: S3Client | null = null;
 
@@ -407,17 +407,9 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
       ? localPath
       : `file://${localPath}`;
 
-    let workingPath = localPath;
-    try {
-      const enhanced = await enhanceForOCR(sourceUri);
-      workingPath = normalizeLocalFilePath(enhanced.uri);
-    } catch (error) {
-      console.warn('OCR image enhancement skipped, using original:', error);
-    }
-
-    const resizePass = async (maxDim: number, quality: number) => {
+    const resizeOnce = async (maxDim: number, quality: number) => {
       const resized = await ImageResizer.createResizedImage(
-        workingPath.startsWith('file://') ? workingPath : `file://${workingPath}`,
+        sourceUri,
         maxDim,
         maxDim,
         'JPEG',
@@ -430,15 +422,15 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
     };
 
     try {
-      workingPath = await resizePass(MAX_UPLOAD_DIMENSION, UPLOAD_JPEG_QUALITY);
+      let workingPath = await resizeOnce(MAX_UPLOAD_DIMENSION, UPLOAD_JPEG_QUALITY);
       const stat = await RNFS.stat(workingPath);
       if (stat.size > MAX_UPLOAD_BYTES) {
-        workingPath = await resizePass(2000, 75);
+        workingPath = await resizeOnce(2200, 80);
       }
       return workingPath;
     } catch (error) {
-      console.warn('Image resize skipped, using enhanced/original:', error);
-      return workingPath;
+      console.warn('Image resize skipped, using original:', error);
+      return localPath;
     }
   }
 
@@ -591,6 +583,7 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
       region: s3Config.region,
       accessKeyId: s3Config.accessKey,
       secretAccessKey: s3Config.secretKey,
+      maxAttempts: DIRECT_TEXTRACT_ATTEMPTS,
     });
 
     const captureMeta = await persistTextractResponse(rawJson, {
@@ -608,57 +601,55 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
     responseKeys: string[],
     onProgress?: (message: string) => void,
   ): Promise<OcrDownloadResult> {
-    await sleep(TEXTRACT_INITIAL_WAIT_MS);
+    let directErrorMessage = '';
 
+    onProgress?.('Running OCR directly on uploaded image…');
     try {
-      return await downloadTextractOutput(responseKeys, uploadedKey, onProgress);
-    } catch (pollError) {
-      console.warn(
-        'Async Textract polling failed; falling back to direct AnalyzeDocument:',
-        pollError,
-      );
-      // #region agent log
+      const directResult = await runDirectTextractAnalysis(uploadedKey, onProgress);
       ocrDebugLog(
         'ProcessImageScreen.tsx:fetchTextractOutput',
-        'Async poll failed, starting direct fallback',
+        'Direct Textract succeeded (primary path)',
+        {uploadedKey, jsonBytes: directResult.rawJson.length},
+        'H1',
+      );
+      return directResult;
+    } catch (directError) {
+      directErrorMessage = getErrorMessage(directError);
+      console.warn('Direct Textract failed:', directErrorMessage);
+      ocrDebugLog(
+        'ProcessImageScreen.tsx:fetchTextractOutput',
+        'Direct Textract failed',
         {
-          pollError: getErrorMessage(pollError),
+          directError: directErrorMessage,
+          retriable: isRetriableTextractError(directError),
           uploadedKey,
           responseKeys,
         },
         'H4',
       );
-      // #endregion
-      try {
-        const result = await runDirectTextractAnalysis(uploadedKey, onProgress);
-        // #region agent log
-        ocrDebugLog(
-          'ProcessImageScreen.tsx:fetchTextractOutput',
-          'Direct fallback succeeded',
-          {uploadedKey, jsonBytes: result.rawJson.length},
-          'H1',
-          'post-fix',
-        );
-        // #endregion
-        return result;
-      } catch (directError) {
-        // #region agent log
-        ocrDebugLog(
-          'ProcessImageScreen.tsx:fetchTextractOutput',
-          'Direct fallback failed',
-          {
-            directError: getErrorMessage(directError),
-            hasTextDecoder: typeof global.TextDecoder !== 'undefined',
-          },
-          'H1',
-        );
-        // #endregion
-        const pollMessage = getErrorMessage(pollError);
-        const directMessage = getErrorMessage(directError);
+
+      if (!isRetriableTextractError(directError)) {
         throw new Error(
-          `${pollMessage}\n\nDirect Textract fallback also failed: ${directMessage}`,
+          `${directErrorMessage}\n\nThe app runs OCR directly via Textract AnalyzeDocument and does not require the legacy resps/ Lambda pipeline. Ensure the IAM user has textract:AnalyzeDocument and s3:GetObject on the upload bucket.`,
         );
       }
+    }
+
+    onProgress?.('Retrying via legacy resps/ pipeline (optional)…');
+    try {
+      await sleep(TEXTRACT_INITIAL_WAIT_MS);
+      return await downloadTextractOutput(responseKeys, uploadedKey, onProgress);
+    } catch (pollError) {
+      const pollMessage = getErrorMessage(pollError);
+      ocrDebugLog(
+        'ProcessImageScreen.tsx:fetchTextractOutput',
+        'Both direct and async OCR failed',
+        {directError: directErrorMessage, pollError: pollMessage},
+        'H2',
+      );
+      throw new Error(
+        `Direct OCR failed: ${directErrorMessage}\n\nAsync poll also failed: ${pollMessage}`,
+      );
     }
   }
 
@@ -755,7 +746,6 @@ const ProcessImageScreen: React.FC<ProcessImageScreenProps> = ({
       // #endregion
 
       const responseKeys = buildTextractResponseKeys(uploadedKey);
-      console.log('Polling Textract response keys:', responseKeys);
       setProcessingMessage('Starting OCR…');
 
       const output = await fetchTextractOutput(
